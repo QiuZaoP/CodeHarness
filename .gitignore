@@ -1,0 +1,33 @@
+# Operating system and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# Dependencies and build output
+node_modules/
+dist/
+build/
+out/
+target/
+coverage/
+*.log
+
+# Local project data
+.cache/
+.data/
+workspace/
+tmp/
+reports/
+
+# Generated indexes and model artifacts
+*.index/
+*.sqlite
+*.db
