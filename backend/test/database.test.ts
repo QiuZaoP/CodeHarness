@@ -266,6 +266,24 @@ describe('database migrations and repositories', () => {
     }
   });
 
+  it('preserves audit insertion order when timestamps are identical', async () => {
+    const file = await databasePath('codeharness-audit-order-');
+    const database = new AppDatabase(file);
+    try {
+      const statement = database.connection.prepare(
+        'INSERT INTO audit_records (id, action, resource_type, resource_id, timestamp) VALUES (?, ?, ?, ?, ?)'
+      );
+      statement.run('z-started', 'tool.started', 'tool_call', 'same-time-tool', timestamp);
+      statement.run('a-completed', 'tool.completed', 'tool_call', 'same-time-tool', timestamp);
+
+      expect(
+        database.getAuditRecords('tool_call', 'same-time-tool').map(({ action }) => action)
+      ).toEqual(['tool.started', 'tool.completed']);
+    } finally {
+      database.close();
+    }
+  });
+
   it('rejects stale writes and diagnoses corrupted stored JSON after restart', async () => {
     const file = await databasePath('codeharness-restart-');
     let database = new AppDatabase(file);

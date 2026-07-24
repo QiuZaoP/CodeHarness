@@ -46,7 +46,7 @@ export class AuditRepository {
   listForResource(resourceType: string, resourceId: string): StoredAuditRecord[] {
     const rows = this.database
       .prepare(
-        'SELECT id, task_id as taskId, actor_id as actorId, action, resource_type as resourceType, resource_id as resourceId, before_json as beforeJson, after_json as afterJson, timestamp FROM audit_records WHERE resource_type = ? AND resource_id = ? ORDER BY timestamp, id'
+        'SELECT id, task_id as taskId, actor_id as actorId, action, resource_type as resourceType, resource_id as resourceId, before_json as beforeJson, after_json as afterJson, timestamp FROM audit_records WHERE resource_type = ? AND resource_id = ? ORDER BY timestamp, rowid'
       )
       .all(resourceType, resourceId) as AuditRow[];
     return rows.map((row) => ({

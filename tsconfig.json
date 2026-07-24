@@ -13,6 +13,11 @@
     "sourceMap": true,
     "types": ["node"]
   },
-  "include": ["backend/**/*.ts", "scripts/**/*.ts", "backend/test/**/*.ts"],
-  "exclude": ["node_modules", "dist"]
+  "include": [
+    "backend/**/*.ts",
+    "scripts/**/*.ts",
+    "backend/test/**/*.ts",
+    "vitest.backend.config.ts"
+  ],
+  "exclude": ["node_modules", "dist", "src"]
 }
