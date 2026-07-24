@@ -81,14 +81,20 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
     async (request, reply) => {
       const { name, sourcePath } = request.body;
       const id = randomUUID();
-      const workspacePath = await workspaceManager.create(sourcePath, id);
-      database.createProject({
-        id,
-        name,
-        sourcePath: path.resolve(sourcePath),
-        workspacePath,
-        createdAt: new Date().toISOString()
-      });
+      const imported = await workspaceManager.importProject(sourcePath, id);
+      try {
+        database.createProject({
+          id,
+          name,
+          sourcePath: imported.sourcePath,
+          workspacePath: imported.projectPath,
+          sourceMetadata: imported.metadata,
+          createdAt: new Date().toISOString()
+        });
+      } catch (error) {
+        await workspaceManager.removeProject(id);
+        throw error;
+      }
       return reply.code(201).send(database.getProject(id));
     }
   );

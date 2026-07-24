@@ -2,7 +2,7 @@
 
 ## 当前版本
 
-- 数据库 schema version：`2`
+- 数据库 schema version：`3`
 - 迁移记录：`schema_migrations`
 - SQLite `PRAGMA user_version` 与最新迁移版本保持一致
 - 启动设置：`foreign_keys = ON`、WAL、`busy_timeout = 5000`
@@ -13,6 +13,7 @@
 
 1. `initial-project-session-task-events`
 2. `runtime-persistence-and-optimistic-locking`
+3. `project-source-metadata`
 
 没有 `schema_migrations` 的阶段 1 数据库会先登记兼容的初始迁移，再增加版本列和运行记录表；项目、会话、任务及历史事件会保留。
 
@@ -40,7 +41,7 @@
 
 当前原子边界：
 
-- 创建任务 + `task.created` + 审计。
+- 创建任务 + 基线快照元数据 + `task.created` + 审计。
 - 任务状态/计划/步骤更新 + 相关事件 + 审计。
 - 工具调用开始记录 + `tool.started`。
 - 工具调用完成结果 + `tool.completed`。
@@ -57,5 +58,7 @@
 ## 当前边界
 
 - `task_leases` 已建表，但租约获取、续期和恢复属于任务生命周期阶段。
-- 工作区仍是项目级骨架；任务级隔离、快照内容和 Git 元数据属于阶段 3。
+- 项目记录包含源目录 manifest 摘要和 Git 元数据；完整 manifest 保存在受管项目目录。
+- 工作区已经按任务隔离，快照元数据持久化；文件布局、校验和回滚规则见
+  [WORKSPACES.md](WORKSPACES.md)。
 - `file_changes` 的审批/应用和完整验证编排将在后续阶段接入。

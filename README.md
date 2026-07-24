@@ -59,11 +59,12 @@ npm run dev
 - OpenAPI：`http://127.0.0.1:3000/api/v1/openapi.json`
 - API 与 SSE 契约：[docs/API_CONTRACT.md](docs/API_CONTRACT.md)
 - SQLite 迁移与事务：[docs/PERSISTENCE.md](docs/PERSISTENCE.md)
+- 任务工作区、快照与 Git：[docs/WORKSPACES.md](docs/WORKSPACES.md)
 - JSON Schema：`schemas/domain.schema.json`
 
 公开 API 的规范前缀为 `/api/v1`，当前契约版本为 `1.0.0`。事件携带显式的 `schemaVersion`；修改跨模块对象、枚举或事件时必须同步 OpenAPI、JSON Schema 和契约测试。
 
-在没有真实模型和解析器之前，后端使用 Mock Harness、文本检索和临时项目工作区跑通任务闭环。完整检查命令：
+在没有真实模型和解析器之前，后端使用 Mock Harness、文本检索和隔离的任务工作区跑通任务闭环。完整检查命令：
 
 ```powershell
 npm run check

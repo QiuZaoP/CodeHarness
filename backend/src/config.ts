@@ -15,5 +15,9 @@ export const config = {
   workspaceRoot: path.resolve(process.env.WORKSPACE_ROOT ?? '.data/workspaces'),
   maxTaskSteps: intEnv('MAX_TASK_STEPS', 20),
   maxCommandTimeoutMs: intEnv('MAX_COMMAND_TIMEOUT_MS', 30_000),
+  maxImportFiles: intEnv('MAX_IMPORT_FILES', 20_000),
+  maxImportBytes: intEnv('MAX_IMPORT_BYTES', 512 * 1024 * 1024),
+  maxFileBytes: intEnv('MAX_FILE_BYTES', 5 * 1024 * 1024),
+  workspaceRetentionHours: intEnv('WORKSPACE_RETENTION_HOURS', 168),
   mockMode: (process.env.MOCK_MODE ?? 'true').toLowerCase() === 'true'
 } as const;

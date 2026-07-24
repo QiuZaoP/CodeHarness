@@ -149,6 +149,22 @@ export interface WorkspaceSnapshot {
   createdAt: string;
 }
 
+export interface SourceGitMetadata {
+  isRepository: boolean;
+  root?: string;
+  revision?: string;
+  branch?: string;
+  dirty: boolean;
+}
+
+export interface SourceMetadata {
+  capturedAt: string;
+  fileCount: number;
+  totalBytes: number;
+  manifestHash: string;
+  git: SourceGitMetadata;
+}
+
 export interface RunBudget {
   maxSteps: number;
   maxToolCalls: number;

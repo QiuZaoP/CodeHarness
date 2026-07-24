@@ -9,7 +9,8 @@ import type {
   TaskStatus,
   ToolName,
   ToolResult,
-  VerificationResult
+  VerificationResult,
+  WorkspaceSnapshot
 } from './types.js';
 import type { ToolExecutor } from './tools.js';
 import type { WorkspaceManager } from './workspace.js';
@@ -39,22 +40,34 @@ export class HarnessRunner {
     }
     const id = randomUUID();
     const now = new Date().toISOString();
+    const createdWorkspace = await this.dependencies.workspaceManager.createTaskWorkspace(
+      projectId,
+      id,
+      project.sourcePath
+    );
     const task: StoredTask = {
       id,
       projectId,
       sessionId,
       goal,
       status: 'CREATED',
-      workspacePath: project.workspacePath,
+      workspacePath: createdWorkspace.workspacePath,
       version: 1,
       createdAt: now,
       updatedAt: now
     };
-    const result = database.createTaskWithEvent(
-      task,
-      { type: 'task.created', timestamp: now, payload: { goal } },
-      randomUUID()
-    );
+    let result;
+    try {
+      result = database.createTaskWithEvent(
+        task,
+        { type: 'task.created', timestamp: now, payload: { goal } },
+        randomUUID(),
+        createdWorkspace.baseline
+      );
+    } catch (error) {
+      await this.dependencies.workspaceManager.removeTask(id);
+      throw error;
+    }
     this.publishEvents(result.events);
     return result.task;
   }
@@ -137,8 +150,31 @@ export class HarnessRunner {
 
   async rollback(taskId: string): Promise<StoredTask> {
     const task = this.requireTask(taskId);
-    await this.dependencies.workspaceManager.rollback(task.projectId, task.workspacePath);
+    const baseline = this.dependencies.database
+      .getWorkspaceSnapshots(task.id)
+      .find((snapshot) => snapshot.kind === 'BASELINE');
+    if (!baseline) throw new AppError('WORKSPACE_ERROR', 'Baseline snapshot does not exist');
+    await this.dependencies.workspaceManager.rollback(task.id, task.workspacePath, baseline);
     return this.changeStatus(taskId, 'CANCELLED', 'Workspace rolled back by user');
+  }
+
+  async checkpoint(
+    taskId: string,
+    kind: Exclude<WorkspaceSnapshot['kind'], 'BASELINE'> = 'CHECKPOINT'
+  ): Promise<WorkspaceSnapshot> {
+    const task = this.requireTask(taskId);
+    const snapshot = await this.dependencies.workspaceManager.createCheckpoint(
+      task.id,
+      task.workspacePath,
+      kind
+    );
+    try {
+      this.dependencies.database.recordWorkspaceSnapshot(snapshot);
+      return snapshot;
+    } catch (error) {
+      await this.dependencies.workspaceManager.removeSnapshot(task.id, snapshot.id);
+      throw error;
+    }
   }
 
   private changeStatus(taskId: string, status: TaskStatus, stopReason?: string): StoredTask {

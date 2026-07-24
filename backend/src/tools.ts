@@ -23,7 +23,7 @@ export class ToolExecutor {
   constructor(private readonly workspaceManager: WorkspaceManager) {}
 
   async listFiles(workspace: string, requestedPath = '.'): Promise<string[]> {
-    const directory = this.workspaceManager.resolve(workspace, requestedPath);
+    const directory = await this.workspaceManager.resolve(workspace, requestedPath);
     const entries = await fs.readdir(directory, { withFileTypes: true });
     return entries
       .filter((entry) => !entry.name.startsWith('.'))
@@ -31,7 +31,7 @@ export class ToolExecutor {
   }
 
   async readFile(workspace: string, requestedPath: string): Promise<string> {
-    const file = this.workspaceManager.resolve(workspace, requestedPath);
+    const file = await this.workspaceManager.resolve(workspace, requestedPath);
     return fs.readFile(file, 'utf8');
   }
 
@@ -40,12 +40,15 @@ export class ToolExecutor {
     query: string
   ): Promise<Array<{ path: string; line: number; text: string }>> {
     const results: Array<{ path: string; line: number; text: string }> = [];
-    const walk = async (directory: string): Promise<void> => {
+    const walk = async (relativeDirectory: string): Promise<void> => {
+      const directory = await this.workspaceManager.resolve(workspace, relativeDirectory);
       const entries = await fs.readdir(directory, { withFileTypes: true });
       for (const entry of entries) {
-        if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
-        const absolute = path.join(directory, entry.name);
-        if (entry.isDirectory()) await walk(absolute);
+        if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.isSymbolicLink())
+          continue;
+        const relative = path.join(relativeDirectory, entry.name);
+        const absolute = await this.workspaceManager.resolve(workspace, relative);
+        if (entry.isDirectory()) await walk(relative);
         else {
           const content = await fs.readFile(absolute, 'utf8').catch(() => undefined);
           if (!content) continue;
@@ -56,14 +59,22 @@ export class ToolExecutor {
         }
       }
     };
-    await walk(workspace);
+    await walk('.');
     return results.slice(0, 200);
   }
 
   async applyPatch(workspace: string, requestedPath: string, content: string): Promise<void> {
-    const file = this.workspaceManager.resolve(workspace, requestedPath);
+    const file = await this.workspaceManager.resolve(workspace, requestedPath, 'write');
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, content, 'utf8');
+  }
+
+  async gitStatus(workspace: string): Promise<Awaited<ReturnType<WorkspaceManager['getStatus']>>> {
+    return this.workspaceManager.getStatus(workspace);
+  }
+
+  async gitDiff(workspace: string): Promise<string> {
+    return this.workspaceManager.getDiff(workspace);
   }
 
   async runCommand(
@@ -71,8 +82,13 @@ export class ToolExecutor {
     command: string
   ): Promise<{ code: number; stdout: string; stderr: string }> {
     const [executable, ...args] = parseCommand(command);
+    const managedWorkspace = await this.workspaceManager.resolve(workspace, '.');
     return new Promise((resolve, reject) => {
-      const child = spawn(executable, args, { cwd: workspace, shell: false, windowsHide: true });
+      const child = spawn(executable, args, {
+        cwd: managedWorkspace,
+        shell: false,
+        windowsHide: true
+      });
       let stdout = '';
       let stderr = '';
       child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()));

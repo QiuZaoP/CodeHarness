@@ -16,6 +16,7 @@ import {
 import { EventRepository, type NewTaskEvent } from './database/repositories/event-repository.js';
 import { ProjectRepository } from './database/repositories/project-repository.js';
 import { SessionRepository } from './database/repositories/session-repository.js';
+import { SnapshotRepository } from './database/repositories/snapshot-repository.js';
 import { TaskRepository, type TaskPatch } from './database/repositories/task-repository.js';
 import { TaskStepRepository } from './database/repositories/task-step-repository.js';
 import { ToolCallRepository } from './database/repositories/tool-call-repository.js';
@@ -26,7 +27,8 @@ import type {
   TaskEvent,
   ToolCallRecord,
   ToolResult,
-  VerificationResult
+  VerificationResult,
+  WorkspaceSnapshot
 } from './types.js';
 
 export type { ProjectRecord, SessionRecord } from './database/records.js';
@@ -61,6 +63,7 @@ export class AppDatabase {
   private readonly taskSteps: TaskStepRepository;
   private readonly toolCalls: ToolCallRepository;
   private readonly verifications: VerificationRepository;
+  private readonly snapshots: SnapshotRepository;
 
   constructor(databasePath = config.databasePath) {
     fs.mkdirSync(path.dirname(databasePath), { recursive: true });
@@ -82,6 +85,7 @@ export class AppDatabase {
     this.taskSteps = new TaskStepRepository(this.connection);
     this.toolCalls = new ToolCallRepository(this.connection);
     this.verifications = new VerificationRepository(this.connection);
+    this.snapshots = new SnapshotRepository(this.connection);
   }
 
   close(): void {
@@ -123,7 +127,8 @@ export class AppDatabase {
   createTaskWithEvent(
     task: StoredTask,
     event: TaskEventDraft,
-    auditId: string
+    auditId: string,
+    baseline?: WorkspaceSnapshot
   ): TaskTransitionResult {
     if (task.version !== 1) {
       throw new AppError('VALIDATION_ERROR', 'A new task must start at version 1', {
@@ -132,6 +137,7 @@ export class AppDatabase {
     }
     return this.writeTransaction(() => {
       this.tasks.create(task);
+      if (baseline) this.snapshots.create(baseline);
       if (task.plan) this.taskSteps.replaceForTask(task.id, task.plan.steps, task.createdAt);
       const storedEvent = this.events.create({ ...event, taskId: task.id });
       this.audits.create({
@@ -149,6 +155,14 @@ export class AppDatabase {
 
   getTask(id: string): StoredTask | undefined {
     return this.tasks.findById(id);
+  }
+
+  getWorkspaceSnapshots(taskId: string): WorkspaceSnapshot[] {
+    return this.snapshots.listByTask(taskId);
+  }
+
+  recordWorkspaceSnapshot(snapshot: WorkspaceSnapshot): void {
+    this.writeTransaction(() => this.snapshots.create(snapshot));
   }
 
   transitionTask(input: TaskTransitionInput): TaskTransitionResult {

@@ -63,8 +63,8 @@ describe('database migrations and repositories', () => {
     const file = await databasePath('codeharness-schema-');
     const database = new AppDatabase(file);
     try {
-      expect(database.getSchemaVersion()).toBe(2);
-      expect(database.getAppliedMigrations().map(({ version }) => version)).toEqual([1, 2]);
+      expect(database.getSchemaVersion()).toBe(3);
+      expect(database.getAppliedMigrations().map(({ version }) => version)).toEqual([1, 2, 3]);
       expect(database.connection.pragma('foreign_keys', { simple: true })).toBe(1);
       const tables = database.connection
         .prepare(
@@ -172,7 +172,7 @@ describe('database migrations and repositories', () => {
 
     const upgraded = new AppDatabase(file);
     try {
-      expect(upgraded.getSchemaVersion()).toBe(2);
+      expect(upgraded.getSchemaVersion()).toBe(3);
       expect(upgraded.getTask(taskId)).toMatchObject({
         id: taskId,
         goal: 'Keep this task',
@@ -294,6 +294,12 @@ describe('database migrations and repositories', () => {
         .prepare("UPDATE tasks SET plan_json = '{not-json' WHERE id = ?")
         .run(created.id);
       expect(() => database.getTask(created.id)).toThrow('Stored JSON is invalid');
+      database.connection
+        .prepare("UPDATE projects SET source_metadata_json = '{}' WHERE id = ?")
+        .run(created.projectId);
+      expect(() => database.getProject(created.projectId)).toThrow(
+        'Stored project source metadata is invalid'
+      );
     } finally {
       database.close();
     }
