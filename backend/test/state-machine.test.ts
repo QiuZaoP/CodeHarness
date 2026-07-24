@@ -8,6 +8,8 @@ describe('task state machine', () => {
     expect(canTransition('PLANNING', 'EXECUTING')).toBe(true);
     expect(canTransition('EXECUTING', 'VERIFYING')).toBe(true);
     expect(canTransition('VERIFYING', 'READY_FOR_REVIEW')).toBe(true);
+    expect(canTransition('VERIFYING', 'PAUSED')).toBe(true);
+    expect(canTransition('PAUSED', 'VERIFYING')).toBe(true);
     expect(canTransition('READY_FOR_REVIEW', 'APPLIED')).toBe(true);
   });
 

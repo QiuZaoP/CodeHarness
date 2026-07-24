@@ -2,7 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { config } from './config.js';
-import type { StoredTask, TaskEvent, TaskPlan, TaskStatus } from './types.js';
+import { contractSchemaVersion } from './contract-values.js';
+import { assertTaskEventContract } from './event-contract.js';
+import type { EventType, StoredTask, TaskEvent, TaskPlan, TaskStatus } from './types.js';
 
 export interface ProjectRecord {
   id: string;
@@ -150,13 +152,24 @@ export class AppDatabase {
     return next;
   }
 
-  addEvent(event: Omit<TaskEvent, 'id'>): TaskEvent {
+  addEvent(event: Omit<TaskEvent, 'id' | 'schemaVersion'>): TaskEvent {
+    assertTaskEventContract({
+      ...event,
+      schemaVersion: contractSchemaVersion,
+      id: 1
+    });
     const result = this.connection
       .prepare(
         'INSERT INTO task_events (task_id, type, timestamp, payload_json) VALUES (?, ?, ?, ?)'
       )
       .run(event.taskId, event.type, event.timestamp, JSON.stringify(event.payload));
-    return { ...event, id: Number(result.lastInsertRowid) };
+    const storedEvent = {
+      ...event,
+      schemaVersion: contractSchemaVersion,
+      id: Number(result.lastInsertRowid)
+    };
+    assertTaskEventContract(storedEvent);
+    return storedEvent;
   }
 
   getEvents(taskId: string, afterId = 0): TaskEvent[] {
@@ -164,10 +177,21 @@ export class AppDatabase {
       .prepare(
         'SELECT id, task_id as taskId, type, timestamp, payload_json as payloadJson FROM task_events WHERE task_id = ? AND id > ? ORDER BY id ASC'
       )
-      .all(taskId, afterId) as Array<Omit<TaskEvent, 'payload'> & { payloadJson: string }>;
-    return rows.map(({ payloadJson, ...event }) => ({
-      ...event,
-      payload: JSON.parse(payloadJson)
-    }));
+      .all(taskId, afterId) as Array<{
+      id: number;
+      taskId: string;
+      type: EventType;
+      timestamp: string;
+      payloadJson: string;
+    }>;
+    return rows.map(({ payloadJson, ...event }) => {
+      const storedEvent: TaskEvent = {
+        ...event,
+        schemaVersion: contractSchemaVersion,
+        payload: JSON.parse(payloadJson)
+      };
+      assertTaskEventContract(storedEvent);
+      return storedEvent;
+    });
   }
 }

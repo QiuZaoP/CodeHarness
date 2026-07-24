@@ -96,7 +96,7 @@ export class HarnessRunner {
   }
 
   cancel(taskId: string): StoredTask {
-    return this.changeStatus(taskId, 'CANCELLED');
+    return this.changeStatus(taskId, 'CANCELLED', 'Cancelled by user');
   }
 
   async rollback(taskId: string): Promise<StoredTask> {
@@ -108,17 +108,12 @@ export class HarnessRunner {
   private changeStatus(taskId: string, status: TaskStatus, stopReason?: string): StoredTask {
     const task = this.requireTask(taskId);
     const next = this.transition(task, status, { stopReason });
-    this.publish(
-      next,
-      status === 'PAUSED'
-        ? 'task.paused'
-        : status === 'CANCELLED'
-          ? 'task.state_changed'
-          : 'task.state_changed',
-      {
-        status
-      }
-    );
+    if (status === 'PAUSED') this.publish(next, 'task.paused', { status });
+    if (status === 'CANCELLED') {
+      this.publish(next, 'task.cancelled', {
+        reason: stopReason ?? 'Cancelled by user'
+      });
+    }
     return next;
   }
 

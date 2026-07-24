@@ -60,6 +60,8 @@ npm run dev
 - API 与 SSE 契约：[docs/API_CONTRACT.md](docs/API_CONTRACT.md)
 - JSON Schema：`schemas/domain.schema.json`
 
+公开 API 的规范前缀为 `/api/v1`，当前契约版本为 `1.0.0`。事件携带显式的 `schemaVersion`；修改跨模块对象、枚举或事件时必须同步 OpenAPI、JSON Schema 和契约测试。
+
 在没有真实模型和解析器之前，后端使用 Mock Harness、文本检索和临时项目工作区跑通任务闭环。完整检查命令：
 
 ```powershell

@@ -11,6 +11,8 @@ import { EventBroker } from './broker.js';
 import { HarnessRunner } from './harness.js';
 import { ToolExecutor } from './tools.js';
 import { WorkspaceManager } from './workspace.js';
+import { domainRef, domainSchema, errorResponses } from './api/contract-schemas.js';
+import type { TaskEvent } from './types.js';
 
 interface ProjectBody {
   name: string;
@@ -26,6 +28,10 @@ interface TaskBody {
   goal: string;
 }
 
+function isValidationError(error: unknown): error is { validation: unknown } {
+  return typeof error === 'object' && error !== null && 'validation' in error;
+}
+
 export interface AppDependencies {
   database?: AppDatabase;
   workspaceManager?: WorkspaceManager;
@@ -39,104 +45,192 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
   const harness = new HarnessRunner({ database, broker, workspaceManager, tools });
   const app = Fastify({ logger: { level: config.logLevel } });
 
+  app.addSchema(domainSchema);
   app.register(cors, { origin: true });
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof AppError) return reply.code(error.statusCode).send(errorBody(error));
+    if (isValidationError(error)) {
+      return reply
+        .code(400)
+        .send(
+          errorBody(new AppError('VALIDATION_ERROR', 'Request validation failed', error.validation))
+        );
+    }
     app.log.error(error);
     return reply.code(500).send(errorBody(error));
   });
 
-  app.get('/api/health', async () => ({
+  app.get('/api/health', { schema: { response: { 200: domainRef('health') } } }, async () => ({
     status: 'ok',
     service: 'codeharness-backend',
     version: 'v1'
   }));
 
-  app.post<{ Body: ProjectBody }>('/api/v1/projects', async (request, reply) => {
-    const { name, sourcePath } = request.body ?? {};
-    if (!name || !sourcePath)
-      throw new AppError('VALIDATION_ERROR', 'name and sourcePath are required');
-    const id = randomUUID();
-    const workspacePath = await workspaceManager.create(sourcePath, id);
-    database.createProject({
-      id,
-      name,
-      sourcePath: path.resolve(sourcePath),
-      workspacePath,
-      createdAt: new Date().toISOString()
-    });
-    return reply.code(201).send(database.getProject(id));
-  });
-
-  app.get<{ Params: { projectId: string } }>('/api/v1/projects/:projectId', async (request) => {
-    const project = database.getProject(request.params.projectId);
-    if (!project) throw new AppError('NOT_FOUND', 'Project not found', request.params, 404);
-    return project;
-  });
-
-  app.post<{ Body: SessionBody }>('/api/v1/sessions', async (request, reply) => {
-    const { projectId, title = 'New session' } = request.body ?? {};
-    if (!projectId) throw new AppError('VALIDATION_ERROR', 'projectId is required');
-    if (!database.getProject(projectId))
-      throw new AppError('NOT_FOUND', 'Project not found', { projectId }, 404);
-    const session = { id: randomUUID(), projectId, title, createdAt: new Date().toISOString() };
-    database.createSession(session);
-    return reply.code(201).send(session);
-  });
-
-  app.post<{ Body: TaskBody }>('/api/v1/tasks', async (request, reply) => {
-    const { projectId, sessionId, goal } = request.body ?? {};
-    if (!projectId || !sessionId || !goal)
-      throw new AppError('VALIDATION_ERROR', 'projectId, sessionId and goal are required');
-    const task = await harness.createTask(projectId, sessionId, goal);
-    return reply.code(201).send(task);
-  });
-
-  app.get<{ Params: { taskId: string } }>('/api/v1/tasks/:taskId', async (request) =>
-    harness.getTask(request.params.taskId)
+  app.post<{ Body: ProjectBody }>(
+    '/api/v1/projects',
+    {
+      schema: {
+        body: domainRef('projectCreate'),
+        response: { 201: domainRef('projectSummary'), ...errorResponses }
+      }
+    },
+    async (request, reply) => {
+      const { name, sourcePath } = request.body;
+      const id = randomUUID();
+      const workspacePath = await workspaceManager.create(sourcePath, id);
+      database.createProject({
+        id,
+        name,
+        sourcePath: path.resolve(sourcePath),
+        workspacePath,
+        createdAt: new Date().toISOString()
+      });
+      return reply.code(201).send(database.getProject(id));
+    }
   );
 
-  app.post<{ Params: { taskId: string } }>('/api/v1/tasks/:taskId/run', async (request, reply) => {
-    const task = await harness.run(request.params.taskId);
-    return reply.send(task);
-  });
+  app.get<{ Params: { projectId: string } }>(
+    '/api/v1/projects/:projectId',
+    {
+      schema: {
+        params: domainRef('projectParams'),
+        response: { 200: domainRef('projectSummary'), ...errorResponses }
+      }
+    },
+    async (request) => {
+      const project = database.getProject(request.params.projectId);
+      if (!project) throw new AppError('NOT_FOUND', 'Project not found', request.params, 404);
+      return project;
+    }
+  );
 
-  app.post<{ Params: { taskId: string } }>('/api/v1/tasks/:taskId/pause', async (request) =>
-    harness.pause(request.params.taskId)
-  );
-  app.post<{ Params: { taskId: string } }>('/api/v1/tasks/:taskId/cancel', async (request) =>
-    harness.cancel(request.params.taskId)
-  );
-  app.post<{ Params: { taskId: string } }>('/api/v1/tasks/:taskId/rollback', async (request) =>
-    harness.rollback(request.params.taskId)
+  app.post<{ Body: SessionBody }>(
+    '/api/v1/sessions',
+    {
+      schema: {
+        body: domainRef('sessionCreate'),
+        response: { 201: domainRef('session'), ...errorResponses }
+      }
+    },
+    async (request, reply) => {
+      const { projectId, title = 'New session' } = request.body;
+      if (!database.getProject(projectId))
+        throw new AppError('NOT_FOUND', 'Project not found', { projectId }, 404);
+      const session = {
+        id: randomUUID(),
+        projectId,
+        title,
+        createdAt: new Date().toISOString()
+      };
+      database.createSession(session);
+      return reply.code(201).send(session);
+    }
   );
 
-  app.get<{ Params: { taskId: string }; Querystring: { after?: string } }>(
+  app.post<{ Body: TaskBody }>(
+    '/api/v1/tasks',
+    {
+      schema: {
+        body: domainRef('taskCreate'),
+        response: { 201: domainRef('task'), ...errorResponses }
+      }
+    },
+    async (request, reply) => {
+      const { projectId, sessionId, goal } = request.body;
+      const task = await harness.createTask(projectId, sessionId, goal);
+      return reply.code(201).send(task);
+    }
+  );
+
+  app.get<{ Params: { taskId: string } }>(
+    '/api/v1/tasks/:taskId',
+    {
+      schema: {
+        params: domainRef('taskParams'),
+        response: { 200: domainRef('task'), ...errorResponses }
+      }
+    },
+    async (request) => harness.getTask(request.params.taskId)
+  );
+
+  app.post<{ Params: { taskId: string } }>(
+    '/api/v1/tasks/:taskId/run',
+    {
+      schema: {
+        params: domainRef('taskParams'),
+        response: { 200: domainRef('task'), ...errorResponses }
+      }
+    },
+    async (request, reply) => {
+      const task = await harness.run(request.params.taskId);
+      return reply.send(task);
+    }
+  );
+
+  app.post<{ Params: { taskId: string } }>(
+    '/api/v1/tasks/:taskId/pause',
+    {
+      schema: {
+        params: domainRef('taskParams'),
+        response: { 200: domainRef('task'), ...errorResponses }
+      }
+    },
+    async (request) => harness.pause(request.params.taskId)
+  );
+  app.post<{ Params: { taskId: string } }>(
+    '/api/v1/tasks/:taskId/cancel',
+    {
+      schema: {
+        params: domainRef('taskParams'),
+        response: { 200: domainRef('task'), ...errorResponses }
+      }
+    },
+    async (request) => harness.cancel(request.params.taskId)
+  );
+  app.post<{ Params: { taskId: string } }>(
+    '/api/v1/tasks/:taskId/rollback',
+    {
+      schema: {
+        params: domainRef('taskParams'),
+        response: { 200: domainRef('task'), ...errorResponses }
+      }
+    },
+    async (request) => harness.rollback(request.params.taskId)
+  );
+
+  app.get<{ Params: { taskId: string }; Querystring: { after?: number } }>(
     '/api/v1/tasks/:taskId/events',
+    {
+      schema: {
+        params: domainRef('taskParams'),
+        querystring: domainRef('eventCursorQuery'),
+        response: { 400: domainRef('errorResponse'), 404: domainRef('errorResponse') }
+      }
+    },
     async (request, reply) => {
       const task = harness.getTask(request.params.taskId);
+      const lastEventId = request.headers['last-event-id'];
+      const rawAfter =
+        request.query.after ?? (Array.isArray(lastEventId) ? lastEventId[0] : lastEventId) ?? 0;
+      const after = Number(rawAfter);
+      if (!Number.isSafeInteger(after) || after < 0) {
+        throw new AppError('VALIDATION_ERROR', 'Event cursor must be a non-negative integer', {
+          after: rawAfter
+        });
+      }
       reply.hijack();
       reply.raw.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive'
       });
-      const write = (event: {
-        id: number;
-        taskId: string;
-        type: string;
-        timestamp: string;
-        payload: Record<string, unknown>;
-      }) => {
+      const write = (event: TaskEvent) => {
         reply.raw.write(
-          `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify({ taskId: event.taskId, timestamp: event.timestamp, ...event.payload })}\n\n`
+          `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`
         );
       };
-      const lastEventId = request.headers['last-event-id'];
-      const after =
-        request.query.after ?? (Array.isArray(lastEventId) ? lastEventId[0] : lastEventId);
-      database.getEvents(task.id, Number(after ?? 0)).forEach(write);
+      database.getEvents(task.id, after).forEach(write);
       const unsubscribe = broker.subscribe(task.id, write);
       const heartbeat = setInterval(() => reply.raw.write(': keep-alive\n\n'), 15_000);
       request.raw.on('close', () => {

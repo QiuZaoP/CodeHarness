@@ -1,98 +1,272 @@
 {
   "openapi": "3.1.0",
-  "info": { "title": "CodeHarness Backend API", "version": "0.1.0" },
+  "info": {
+    "title": "CodeHarness Backend API",
+    "version": "0.1.0"
+  },
+  "x-contract-schema-version": "1.0.0",
   "servers": [{ "url": "http://127.0.0.1:3000" }],
   "paths": {
-    "/api/health": { "get": { "responses": { "200": { "description": "Service health" } } } },
+    "/api/health": {
+      "get": {
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "description": "Service health",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Health" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/openapi.json": {
+      "get": {
+        "operationId": "getOpenApi",
+        "responses": {
+          "200": {
+            "description": "OpenAPI 3.1 document",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects": {
       "post": {
+        "operationId": "createProject",
         "requestBody": {
           "required": true,
           "content": {
-            "application/json": { "schema": { "$ref": "#/components/schemas/ProjectCreate" } }
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ProjectCreate" }
+            }
           }
         },
         "responses": {
-          "201": { "description": "Project created" },
-          "400": { "$ref": "#/components/responses/Error" }
+          "201": {
+            "description": "Project created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ProjectSummary" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}": {
+      "get": {
+        "operationId": "getProject",
+        "parameters": [{ "$ref": "#/components/parameters/ProjectId" }],
+        "responses": {
+          "200": {
+            "description": "Project summary",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ProjectSummary" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" }
         }
       }
     },
     "/api/v1/sessions": {
       "post": {
+        "operationId": "createSession",
         "requestBody": {
           "required": true,
           "content": {
-            "application/json": { "schema": { "$ref": "#/components/schemas/SessionCreate" } }
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/SessionCreate" }
+            }
           }
         },
-        "responses": { "201": { "description": "Session created" } }
+        "responses": {
+          "201": {
+            "description": "Session created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Session" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" }
+        }
       }
     },
     "/api/v1/tasks": {
       "post": {
+        "operationId": "createTask",
         "requestBody": {
           "required": true,
           "content": {
-            "application/json": { "schema": { "$ref": "#/components/schemas/TaskCreate" } }
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/TaskCreate" }
+            }
           }
         },
-        "responses": { "201": { "description": "Task created" } }
+        "responses": {
+          "201": {
+            "description": "Task created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" }
+        }
       }
     },
     "/api/v1/tasks/{taskId}": {
       "get": {
+        "operationId": "getTask",
         "parameters": [{ "$ref": "#/components/parameters/TaskId" }],
-        "responses": { "200": { "description": "Task" } }
+        "responses": {
+          "200": {
+            "description": "Task",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" }
+        }
       }
     },
     "/api/v1/tasks/{taskId}/run": {
       "post": {
+        "operationId": "runTask",
         "parameters": [{ "$ref": "#/components/parameters/TaskId" }],
-        "responses": { "200": { "description": "Task run result" } }
+        "responses": {
+          "200": {
+            "description": "Task run result",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "409": { "$ref": "#/components/responses/Error" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
       }
     },
     "/api/v1/tasks/{taskId}/events": {
       "get": {
-        "parameters": [{ "$ref": "#/components/parameters/TaskId" }],
+        "operationId": "subscribeTaskEvents",
+        "parameters": [
+          { "$ref": "#/components/parameters/TaskId" },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer", "minimum": 0 }
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "integer", "minimum": 0 }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Server-sent event stream",
-            "content": { "text/event-stream": {} }
-          }
+            "content": {
+              "text/event-stream": {
+                "schema": { "type": "string" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" }
         }
       }
     },
     "/api/v1/tasks/{taskId}/pause": {
       "post": {
+        "operationId": "pauseTask",
         "parameters": [{ "$ref": "#/components/parameters/TaskId" }],
         "responses": {
-          "200": { "description": "Task paused" },
+          "200": {
+            "description": "Task paused",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
           "409": { "$ref": "#/components/responses/Error" }
         }
       }
     },
     "/api/v1/tasks/{taskId}/cancel": {
       "post": {
+        "operationId": "cancelTask",
         "parameters": [{ "$ref": "#/components/parameters/TaskId" }],
         "responses": {
-          "200": { "description": "Task cancelled" },
+          "200": {
+            "description": "Task cancelled",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
           "409": { "$ref": "#/components/responses/Error" }
         }
       }
     },
     "/api/v1/tasks/{taskId}/rollback": {
       "post": {
+        "operationId": "rollbackTask",
         "parameters": [{ "$ref": "#/components/parameters/TaskId" }],
         "responses": {
-          "200": { "description": "Workspace rolled back" },
-          "409": { "$ref": "#/components/responses/Error" }
+          "200": {
+            "description": "Workspace rolled back and task cancelled",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "409": { "$ref": "#/components/responses/Error" },
+          "500": { "$ref": "#/components/responses/Error" }
         }
       }
     }
   },
   "components": {
     "parameters": {
+      "ProjectId": {
+        "name": "projectId",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" }
+      },
       "TaskId": {
         "name": "taskId",
         "in": "path",
@@ -101,21 +275,54 @@
       }
     },
     "schemas": {
+      "Health": {
+        "type": "object",
+        "required": ["status", "service", "version"],
+        "properties": {
+          "status": { "type": "string", "const": "ok" },
+          "service": { "type": "string", "const": "codeharness-backend" },
+          "version": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
       "ProjectCreate": {
         "type": "object",
         "required": ["name", "sourcePath"],
         "properties": {
-          "name": { "type": "string", "minLength": 1 },
+          "name": { "type": "string", "minLength": 1, "maxLength": 120 },
           "sourcePath": { "type": "string", "minLength": 1 }
-        }
+        },
+        "additionalProperties": false
+      },
+      "ProjectSummary": {
+        "type": "object",
+        "required": ["id", "name", "createdAt"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string", "minLength": 1 },
+          "createdAt": { "type": "string", "format": "date-time" }
+        },
+        "additionalProperties": false
       },
       "SessionCreate": {
         "type": "object",
         "required": ["projectId"],
         "properties": {
           "projectId": { "type": "string", "format": "uuid" },
-          "title": { "type": "string" }
-        }
+          "title": { "type": "string", "minLength": 1, "maxLength": 200 }
+        },
+        "additionalProperties": false
+      },
+      "Session": {
+        "type": "object",
+        "required": ["id", "projectId", "title", "createdAt"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "projectId": { "type": "string", "format": "uuid" },
+          "title": { "type": "string", "minLength": 1 },
+          "createdAt": { "type": "string", "format": "date-time" }
+        },
+        "additionalProperties": false
       },
       "TaskCreate": {
         "type": "object",
@@ -124,7 +331,8 @@
           "projectId": { "type": "string", "format": "uuid" },
           "sessionId": { "type": "string", "format": "uuid" },
           "goal": { "type": "string", "minLength": 1 }
-        }
+        },
+        "additionalProperties": false
       },
       "TaskStatus": {
         "type": "string",
@@ -142,82 +350,45 @@
           "FAILED"
         ]
       },
-      "Plan": {
-        "type": "object",
-        "required": ["goal", "assumptions", "steps", "verification"],
-        "properties": {
-          "goal": { "type": "string" },
-          "assumptions": { "type": "array", "items": { "type": "string" } },
-          "steps": { "type": "array", "items": { "$ref": "#/components/schemas/PlanStep" } },
-          "verification": { "type": "array", "items": { "type": "string" } }
-        }
-      },
       "PlanStep": {
         "type": "object",
         "required": ["id", "title", "status"],
         "properties": {
-          "id": { "type": "string" },
-          "title": { "type": "string" },
+          "id": { "type": "string", "minLength": 1 },
+          "title": { "type": "string", "minLength": 1 },
           "status": { "type": "string", "enum": ["PENDING", "RUNNING", "DONE"] }
-        }
+        },
+        "additionalProperties": false
+      },
+      "Plan": {
+        "type": "object",
+        "required": ["goal", "assumptions", "steps", "verification"],
+        "properties": {
+          "goal": { "type": "string", "minLength": 1 },
+          "assumptions": { "type": "array", "items": { "type": "string" } },
+          "steps": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/PlanStep" }
+          },
+          "verification": { "type": "array", "items": { "type": "string" } }
+        },
+        "additionalProperties": false
       },
       "Task": {
         "type": "object",
-        "required": [
-          "id",
-          "projectId",
-          "sessionId",
-          "goal",
-          "status",
-          "workspacePath",
-          "createdAt",
-          "updatedAt"
-        ],
+        "required": ["id", "projectId", "sessionId", "goal", "status", "createdAt", "updatedAt"],
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "projectId": { "type": "string", "format": "uuid" },
           "sessionId": { "type": "string", "format": "uuid" },
-          "goal": { "type": "string" },
+          "goal": { "type": "string", "minLength": 1 },
           "status": { "$ref": "#/components/schemas/TaskStatus" },
           "plan": { "$ref": "#/components/schemas/Plan" },
-          "workspacePath": { "type": "string" },
           "createdAt": { "type": "string", "format": "date-time" },
           "updatedAt": { "type": "string", "format": "date-time" },
           "stopReason": { "type": "string" }
-        }
-      },
-      "ToolCall": {
-        "type": "object",
-        "required": ["name", "arguments"],
-        "properties": {
-          "name": {
-            "type": "string",
-            "enum": ["list_files", "search_text", "read_file", "apply_patch", "run_command"]
-          },
-          "arguments": { "type": "object", "additionalProperties": true }
-        }
-      },
-      "DiffFile": {
-        "type": "object",
-        "required": ["path", "status", "additions", "deletions", "patch"],
-        "properties": {
-          "path": { "type": "string" },
-          "status": { "type": "string", "enum": ["ADDED", "MODIFIED", "DELETED", "RENAMED"] },
-          "additions": { "type": "integer", "minimum": 0 },
-          "deletions": { "type": "integer", "minimum": 0 },
-          "patch": { "type": "string" }
-        }
-      },
-      "Event": {
-        "type": "object",
-        "required": ["id", "taskId", "type", "timestamp", "payload"],
-        "properties": {
-          "id": { "type": "integer", "minimum": 1 },
-          "taskId": { "type": "string", "format": "uuid" },
-          "type": { "type": "string" },
-          "timestamp": { "type": "string", "format": "date-time" },
-          "payload": { "type": "object", "additionalProperties": true }
-        }
+        },
+        "additionalProperties": false
       },
       "Error": {
         "type": "object",
@@ -227,18 +398,39 @@
             "type": "object",
             "required": ["code", "message"],
             "properties": {
-              "code": { "type": "string" },
+              "code": {
+                "type": "string",
+                "enum": [
+                  "VALIDATION_ERROR",
+                  "NOT_FOUND",
+                  "CONFLICT",
+                  "FORBIDDEN",
+                  "WORKSPACE_ERROR",
+                  "COMMAND_NOT_ALLOWED",
+                  "MODEL_ERROR",
+                  "INDEX_ERROR",
+                  "BUDGET_EXCEEDED",
+                  "TASK_CANCELLED",
+                  "INTERNAL_ERROR"
+                ]
+              },
               "message": { "type": "string" },
-              "details": {}
-            }
+              "details": true
+            },
+            "additionalProperties": false
           }
-        }
+        },
+        "additionalProperties": false
       }
     },
     "responses": {
       "Error": {
         "description": "Structured error",
-        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
       }
     }
   }

@@ -1,11 +1,4 @@
-export type ErrorCode =
-  | 'VALIDATION_ERROR'
-  | 'NOT_FOUND'
-  | 'CONFLICT'
-  | 'FORBIDDEN'
-  | 'WORKSPACE_ERROR'
-  | 'COMMAND_NOT_ALLOWED'
-  | 'INTERNAL_ERROR';
+import type { ErrorCode } from './types.js';
 
 export class AppError extends Error {
   constructor(
