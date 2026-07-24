@@ -58,6 +58,7 @@ npm run dev
 - 健康检查：`http://127.0.0.1:3000/api/health`
 - OpenAPI：`http://127.0.0.1:3000/api/v1/openapi.json`
 - API 与 SSE 契约：[docs/API_CONTRACT.md](docs/API_CONTRACT.md)
+- SQLite 迁移与事务：[docs/PERSISTENCE.md](docs/PERSISTENCE.md)
 - JSON Schema：`schemas/domain.schema.json`
 
 公开 API 的规范前缀为 `/api/v1`，当前契约版本为 `1.0.0`。事件携带显式的 `schemaVersion`；修改跨模块对象、枚举或事件时必须同步 OpenAPI、JSON Schema 和契约测试。

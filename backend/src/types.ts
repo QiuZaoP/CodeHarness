@@ -81,6 +81,7 @@ export interface StoredTask {
   status: TaskStatus;
   plan?: TaskPlan;
   workspacePath: string;
+  version: number;
   createdAt: string;
   updatedAt: string;
   stopReason?: string;

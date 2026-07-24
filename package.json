@@ -14,7 +14,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint backend/src backend/test scripts --max-warnings=0",
-    "format:check": "prettier --check backend schemas scripts *.json *.config.js README.md CONTRIBUTING.md .github/workflows",
+    "format:check": "prettier --check backend docs schemas scripts *.json *.config.js README.md CONTRIBUTING.md .github/workflows",
     "schema:check": "tsx scripts/validate-schemas.ts",
     "check": "npm run format:check && npm run lint && npm run typecheck && npm run schema:check && npm test",
     "typecheck": "tsc -p tsconfig.json --noEmit"

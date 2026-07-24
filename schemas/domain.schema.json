@@ -251,6 +251,7 @@
         "goal",
         "status",
         "workspacePath",
+        "version",
         "createdAt",
         "updatedAt"
       ],
@@ -262,6 +263,7 @@
         "status": { "$ref": "#/$defs/taskStatus" },
         "plan": { "$ref": "#/$defs/plan" },
         "workspacePath": { "type": "string", "minLength": 1 },
+        "version": { "type": "integer", "minimum": 1 },
         "createdAt": { "$ref": "#/$defs/timestamp" },
         "updatedAt": { "$ref": "#/$defs/timestamp" },
         "stopReason": { "type": "string" }

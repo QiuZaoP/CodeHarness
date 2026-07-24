@@ -74,6 +74,7 @@ task.state_changed
 tool.started / tool.completed  (可重复)
 task.state_changed
 tool.started / tool.completed  (可重复)
+verification.completed
 task.state_changed
 task.completed
 ```

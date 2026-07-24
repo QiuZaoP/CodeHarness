@@ -55,6 +55,13 @@ describe('backend API', () => {
     expect(runResponse.json<{ status: string }>().status).toBe('READY_FOR_REVIEW');
     expect(db.getEvents(task.id).map((event) => event.type)).toContain('tool.completed');
     expect(db.getEvents(task.id).every((event) => event.schemaVersion === '1.0.0')).toBe(true);
+    expect(db.getTask(task.id)?.plan?.steps).toHaveLength(2);
+    expect(db.getToolCalls(task.id)).toHaveLength(3);
+    expect(db.getToolCalls(task.id).every((call) => call.status === 'SUCCEEDED')).toBe(true);
+    expect(db.getVerificationResults(task.id)).toEqual([
+      expect.objectContaining({ command: 'node --version', status: 'PASSED' })
+    ]);
+    expect(db.getAuditRecords('task', task.id).length).toBeGreaterThan(1);
 
     const cancelResponse = await app.inject({
       method: 'POST',

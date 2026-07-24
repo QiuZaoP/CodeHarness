@@ -14,8 +14,10 @@ function readSchema(fileName: string): JsonSchema {
 const ajv = new Ajv2020({ allErrors: true, strict: true });
 const addFormats = addFormatsModule as unknown as (instance: Ajv2020) => void;
 addFormats(ajv);
-ajv.addSchema(readSchema('domain.schema.json'));
+const domainSchema = readSchema('domain.schema.json');
+ajv.addSchema(domainSchema);
 const validateTaskEvent = ajv.compile(readSchema('event.schema.json'));
+const domainSchemaId = String(domainSchema.$id);
 
 export function assertTaskEventContract(event: TaskEvent): void {
   if (validateTaskEvent(event)) return;
@@ -23,6 +25,25 @@ export function assertTaskEventContract(event: TaskEvent): void {
     'INTERNAL_ERROR',
     'Task event violates the public contract',
     { validationErrors: validateTaskEvent.errors },
+    500
+  );
+}
+
+export function assertDomainContract(definition: string, value: unknown): void {
+  const validate = ajv.getSchema(`${domainSchemaId}#/$defs/${definition}`);
+  if (!validate) {
+    throw new AppError(
+      'INTERNAL_ERROR',
+      `Unknown domain contract definition: ${definition}`,
+      undefined,
+      500
+    );
+  }
+  if (validate(value)) return;
+  throw new AppError(
+    'INTERNAL_ERROR',
+    `Stored value violates the ${definition} contract`,
+    { validationErrors: validate.errors },
     500
   );
 }

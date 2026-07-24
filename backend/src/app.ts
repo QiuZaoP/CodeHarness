@@ -38,12 +38,15 @@ export interface AppDependencies {
 }
 
 export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
+  const ownsDatabase = !dependencies.database;
   const database = dependencies.database ?? new AppDatabase();
   const workspaceManager = dependencies.workspaceManager ?? new WorkspaceManager();
   const broker = new EventBroker();
   const tools = new ToolExecutor(workspaceManager);
   const harness = new HarnessRunner({ database, broker, workspaceManager, tools });
   const app = Fastify({ logger: { level: config.logLevel } });
+
+  if (ownsDatabase) app.addHook('onClose', async () => database.close());
 
   app.addSchema(domainSchema);
   app.register(cors, { origin: true });

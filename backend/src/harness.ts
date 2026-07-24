@@ -1,9 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import { AppError } from './errors.js';
 import type { EventBroker } from './broker.js';
-import type { AppDatabase } from './db.js';
+import type { AppDatabase, TaskEventDraft } from './db.js';
 import { assertTransition } from './state-machine.js';
-import type { TaskPlan, StoredTask, TaskStatus } from './types.js';
+import type {
+  StoredTask,
+  TaskPlan,
+  TaskStatus,
+  ToolName,
+  ToolResult,
+  VerificationResult
+} from './types.js';
 import type { ToolExecutor } from './tools.js';
 import type { WorkspaceManager } from './workspace.js';
 import { config } from './config.js';
@@ -39,12 +46,17 @@ export class HarnessRunner {
       goal,
       status: 'CREATED',
       workspacePath: project.workspacePath,
+      version: 1,
       createdAt: now,
       updatedAt: now
     };
-    database.createTask(task);
-    this.publish(task, 'task.created', { goal });
-    return task;
+    const result = database.createTaskWithEvent(
+      task,
+      { type: 'task.created', timestamp: now, payload: { goal } },
+      randomUUID()
+    );
+    this.publishEvents(result.events);
+    return result.task;
   }
 
   async run(taskId: string): Promise<StoredTask> {
@@ -53,35 +65,59 @@ export class HarnessRunner {
     try {
       task = this.transition(task, 'PRECHECKING');
       const plan = this.makeMockPlan(task.goal);
-      task = this.transition(task, 'PLANNING', { plan });
-      this.publish(task, 'task.plan.updated', { plan });
+      task = this.transition(task, 'PLANNING', { plan }, [
+        { type: 'task.plan.updated', payload: { plan } }
+      ]);
       task = this.transition(task, 'EXECUTING');
 
-      const files = await this.callTool(task, 'list_files', () =>
+      const files = await this.callTool(task, 'list_files', { path: '.' }, () =>
         tools.listFiles(task.workspacePath)
       );
       const readme = files.find((file) => file.toLowerCase().endsWith('readme.md'));
       if (readme)
-        await this.callTool(task, 'read_file', () => tools.readFile(task.workspacePath, readme));
+        await this.callTool(task, 'read_file', { path: readme }, () =>
+          tools.readFile(task.workspacePath, readme)
+        );
 
       task = this.transition(task, 'VERIFYING');
-      const verification = await this.callTool(task, 'run_command', () =>
-        tools.runCommand(task.workspacePath, 'node --version')
+      const verification = await this.callTool(
+        task,
+        'run_command',
+        { command: 'node --version' },
+        () => tools.runCommand(task.workspacePath, 'node --version')
       );
+      const verificationResult: VerificationResult = {
+        id: randomUUID(),
+        taskId: task.id,
+        command: 'node --version',
+        status: verification.code === 0 ? 'PASSED' : 'FAILED',
+        exitCode: verification.code,
+        outputSummary: `${verification.stdout}\n${verification.stderr}`.trim().slice(0, 4000),
+        failureCategory: verification.code === 0 ? undefined : 'ENVIRONMENT',
+        createdAt: new Date().toISOString()
+      };
+      const verificationEvent = this.dependencies.database.recordVerification(verificationResult, {
+        type: 'verification.completed',
+        timestamp: verificationResult.createdAt,
+        payload: { verification: verificationResult }
+      });
+      this.dependencies.broker.publish(verificationEvent);
       if (verification.code !== 0)
         throw new AppError('WORKSPACE_ERROR', 'Verification command failed', verification);
-      task = this.transition(task, 'READY_FOR_REVIEW');
-      this.publish(task, 'task.completed', {
-        verification: { command: 'node --version', code: verification.code }
-      });
+      task = this.transition(task, 'READY_FOR_REVIEW', {}, [
+        {
+          type: 'task.completed',
+          payload: { verification: { command: 'node --version', code: verification.code } }
+        }
+      ]);
       return task;
     } catch (error) {
       const current = this.requireTask(taskId);
       if (current.status !== 'FAILED' && current.status !== 'CANCELLED') {
-        task = this.transition(current, 'FAILED', {
-          stopReason: error instanceof Error ? error.message : String(error)
-        });
-        this.publish(task, 'task.failed', { message: task.stopReason });
+        const stopReason = error instanceof Error ? error.message : String(error);
+        task = this.transition(current, 'FAILED', { stopReason }, [
+          { type: 'task.failed', payload: { message: stopReason } }
+        ]);
       }
       throw error;
     }
@@ -107,46 +143,121 @@ export class HarnessRunner {
 
   private changeStatus(taskId: string, status: TaskStatus, stopReason?: string): StoredTask {
     const task = this.requireTask(taskId);
-    const next = this.transition(task, status, { stopReason });
-    if (status === 'PAUSED') this.publish(next, 'task.paused', { status });
+    const events: Array<Omit<TaskEventDraft, 'timestamp'>> = [];
+    if (status === 'PAUSED') events.push({ type: 'task.paused', payload: { status } });
     if (status === 'CANCELLED') {
-      this.publish(next, 'task.cancelled', {
-        reason: stopReason ?? 'Cancelled by user'
+      events.push({
+        type: 'task.cancelled',
+        payload: { reason: stopReason ?? 'Cancelled by user' }
       });
     }
-    return next;
+    return this.transition(task, status, { stopReason }, events);
   }
 
   private transition(
     task: StoredTask,
     status: TaskStatus,
-    patch: Partial<StoredTask> = {}
+    patch: Partial<Pick<StoredTask, 'plan' | 'stopReason'>> = {},
+    additionalEvents: Array<Omit<TaskEventDraft, 'timestamp'>> = []
   ): StoredTask {
     assertTransition(task.status, status);
-    const next = this.dependencies.database.updateTask(task.id, {
-      status,
-      plan: patch.plan,
-      stopReason: patch.stopReason
+    const timestamp = new Date().toISOString();
+    const taskPatch: Parameters<AppDatabase['transitionTask']>[0]['patch'] = { status };
+    if (Object.hasOwn(patch, 'plan')) taskPatch.plan = patch.plan;
+    if (Object.hasOwn(patch, 'stopReason')) taskPatch.stopReason = patch.stopReason;
+    const result = this.dependencies.database.transitionTask({
+      taskId: task.id,
+      expectedVersion: task.version,
+      patch: taskPatch,
+      events: [
+        {
+          type: 'task.state_changed',
+          timestamp,
+          payload: { from: task.status, to: status }
+        },
+        ...additionalEvents.map((event) => ({ ...event, timestamp }))
+      ],
+      audit: {
+        id: randomUUID(),
+        action: 'task.state_changed',
+        timestamp
+      }
     });
-    this.publish(next, 'task.state_changed', { from: task.status, to: status });
-    return next;
+    this.publishEvents(result.events);
+    return result.task;
   }
 
   private async callTool<T>(
     task: StoredTask,
-    toolName: string,
+    toolName: ToolName,
+    arguments_: Record<string, unknown>,
     action: () => Promise<T>
   ): Promise<T> {
-    this.publish(task, 'tool.started', { toolName });
+    const id = randomUUID();
+    const startedAt = new Date().toISOString();
+    const startedEvent = this.dependencies.database.startToolCall(
+      {
+        id,
+        taskId: task.id,
+        tool: { name: toolName, arguments: arguments_ },
+        status: 'RUNNING',
+        startedAt
+      },
+      {
+        type: 'tool.started',
+        timestamp: startedAt,
+        payload: { toolName, arguments: arguments_ }
+      }
+    );
+    this.dependencies.broker.publish(startedEvent);
+    const startedTime = Date.now();
     try {
       const result = await action();
-      this.publish(task, 'tool.completed', { toolName, result: this.summary(result) });
+      const summary = this.summary(result);
+      const finishedAt = new Date().toISOString();
+      const toolResult: ToolResult = {
+        status: 'SUCCEEDED',
+        output: summary,
+        affectedFiles: [],
+        durationMs: Date.now() - startedTime
+      };
+      const completedEvent = this.dependencies.database.completeToolCall(
+        id,
+        task.id,
+        toolResult,
+        finishedAt,
+        {
+          type: 'tool.completed',
+          timestamp: finishedAt,
+          payload: { toolName, result: summary }
+        }
+      );
+      this.dependencies.broker.publish(completedEvent);
       return result;
     } catch (error) {
-      this.publish(task, 'tool.completed', {
-        toolName,
-        error: error instanceof Error ? error.message : String(error)
-      });
+      const message = error instanceof Error ? error.message : String(error);
+      const finishedAt = new Date().toISOString();
+      const toolResult: ToolResult = {
+        status: 'FAILED',
+        error: {
+          code: error instanceof AppError ? error.code : 'WORKSPACE_ERROR',
+          message
+        },
+        affectedFiles: [],
+        durationMs: Date.now() - startedTime
+      };
+      const completedEvent = this.dependencies.database.completeToolCall(
+        id,
+        task.id,
+        toolResult,
+        finishedAt,
+        {
+          type: 'tool.completed',
+          timestamp: finishedAt,
+          payload: { toolName, error: message }
+        }
+      );
+      this.dependencies.broker.publish(completedEvent);
       throw error;
     }
   }
@@ -169,18 +280,8 @@ export class HarnessRunner {
     return task;
   }
 
-  private publish(
-    task: StoredTask,
-    type: Parameters<AppDatabase['addEvent']>[0]['type'],
-    payload: Record<string, unknown>
-  ): void {
-    const event = this.dependencies.database.addEvent({
-      taskId: task.id,
-      type,
-      timestamp: new Date().toISOString(),
-      payload
-    });
-    this.dependencies.broker.publish(event);
+  private publishEvents(events: readonly Parameters<EventBroker['publish']>[0][]): void {
+    events.forEach((event) => this.dependencies.broker.publish(event));
   }
 
   private summary(value: unknown): unknown {
