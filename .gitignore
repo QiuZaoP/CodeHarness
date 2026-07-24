@@ -31,3 +31,6 @@ reports/
 *.index/
 *.sqlite
 *.db
+
+# Local AI development notes
+Mydocs/
