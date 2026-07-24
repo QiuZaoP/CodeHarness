@@ -43,19 +43,26 @@ export function TaskProgress() {
   const isCancelled = task.status === "CANCELLED";
   const isFailed = task.status === "FAILED";
   const isReviewReady = task.status === "READY_FOR_REVIEW";
-  const controlsDisabled = isCancelled || isFailed || isReviewReady;
+  const isWaitingUser = task.status === "WAITING_USER";
+  const isApplied = task.status === "APPLIED";
+  const controlsDisabled =
+    isCancelled || isFailed || isReviewReady || isApplied;
   const statusLabel =
     task.status === "PAUSED"
       ? "已暂停"
-      : task.status === "CANCELLED"
-        ? "已取消"
-        : task.status === "FAILED"
-          ? "执行失败"
-          : task.status === "READY_FOR_REVIEW"
-            ? "等待审阅"
-            : task.status === "VERIFYING"
-              ? "正在验证"
-              : "正在执行";
+      : isWaitingUser
+        ? "等待确认"
+        : isApplied
+          ? "已应用"
+          : task.status === "CANCELLED"
+            ? "已取消"
+            : task.status === "FAILED"
+              ? "执行失败"
+              : task.status === "READY_FOR_REVIEW"
+                ? "等待审阅"
+                : task.status === "VERIFYING"
+                  ? "正在验证"
+                  : "正在执行";
 
   return (
     <section className="task-progress" aria-label="任务进度">
@@ -68,7 +75,7 @@ export function TaskProgress() {
               <Pause size={13} />
             ) : isCancelled || isFailed ? (
               <Ban size={13} />
-            ) : isReviewReady ? (
+            ) : isReviewReady || isApplied ? (
               <Check size={13} />
             ) : (
               <CircleDashed size={13} className="spin-slow" />

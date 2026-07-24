@@ -10,9 +10,12 @@ import {
 import { workspaceApi } from "../services/api";
 import { workspaceEvents } from "../services/events";
 import type {
+  BackendTask,
   FileChange,
   Message,
   SearchResult,
+  ToolCall,
+  WorkspaceEvent,
   WorkspaceSnapshot,
 } from "../types";
 
@@ -71,6 +74,26 @@ function sessionStatusForTask(
   return "running";
 }
 
+function taskFromBackend(task: BackendTask): WorkspaceSnapshot["task"] {
+  return workspaceApi.mapBackendTask(task);
+}
+
+function statusFromEvent(event: WorkspaceEvent): WorkspaceSnapshot["task"]["status"] | null {
+  if (event.type === "task.state_changed") {
+    return (event.payload.to as WorkspaceSnapshot["task"]["status"]) || null;
+  }
+  if (event.type === "task.completed") {
+    return "READY_FOR_REVIEW";
+  }
+  if (event.type === "task.failed") {
+    return "FAILED";
+  }
+  if (event.type === "task.paused") {
+    return "PAUSED";
+  }
+  return null;
+}
+
 export function WorkspaceProvider({ children }: PropsWithChildren) {
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
@@ -119,62 +142,63 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
           return current;
         }
 
-        if (event.type === "task.status") {
+        const nextStatus = statusFromEvent(event);
+        if (nextStatus) {
           return {
             ...current,
-            task: { ...current.task, status: event.status },
+            task: { ...current.task, status: nextStatus },
             sessions: current.sessions.map((session) =>
               session.id === current.activeSessionId
                 ? {
                     ...session,
-                    status: sessionStatusForTask(event.status),
+                    status: sessionStatusForTask(nextStatus),
                   }
                 : session,
             ),
           };
         }
 
-        if (event.type === "tool.updated") {
-          const exists = current.task.toolCalls.some(
-            (tool) => tool.id === event.tool.id,
-          );
+        if (event.type === "task.plan.updated") {
+          const plan = event.payload.plan as BackendTask["plan"];
           return {
             ...current,
             task: {
               ...current.task,
-              toolCalls: exists
-                ? current.task.toolCalls.map((tool) =>
-                    tool.id === event.tool.id ? event.tool : tool,
-                  )
-                : [...current.task.toolCalls, event.tool],
+              steps:
+                plan?.steps.map((step) => ({
+                  id: step.id,
+                  label: step.title,
+                  status:
+                    step.status === "DONE"
+                      ? "completed"
+                      : step.status === "RUNNING"
+                        ? "active"
+                        : "pending",
+                })) || [],
             },
           };
         }
 
-        if (event.type === "message.created") {
+        if (event.type === "tool.started" || event.type === "tool.completed") {
+          const toolName = String(event.payload.toolName || "tool");
+          const toolId = `event-tool-${event.id}`;
+          const tool: ToolCall = {
+            id: toolId,
+            name: toolName,
+            summary:
+              event.type === "tool.started" ? "开始执行工具" : "工具执行完成",
+            detail: JSON.stringify(event.payload),
+            status: event.type === "tool.started" ? "running" : event.payload.error ? "failed" : "completed",
+          };
           return {
             ...current,
-            messages: {
-              ...current.messages,
-              [event.sessionId]: [
-                ...(current.messages[event.sessionId] || []),
-                event.message,
-              ],
+            task: {
+              ...current.task,
+              toolCalls: [...current.task.toolCalls, tool],
             },
           };
         }
-
-        const exists = current.changes.some(
-          (change) => change.id === event.change.id,
-        );
-        return {
-          ...current,
-          changes: exists
-            ? current.changes.map((change) =>
-                change.id === event.change.id ? event.change : change,
-              )
-            : [...current.changes, event.change],
-        };
+        return current;
       });
     });
   }, [taskId]);
@@ -201,6 +225,9 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
             ...current,
             projects: [project, ...current.projects],
             activeProjectId: project.id,
+            activeSessionId: "",
+            sessions: [],
+            messages: {},
           }
         : current,
     );
@@ -208,7 +235,16 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
 
   const selectProject = useCallback((projectId: string) => {
     setSnapshot((current) =>
-      current ? { ...current, activeProjectId: projectId } : current,
+      current
+        ? {
+            ...current,
+            activeProjectId: projectId,
+            activeSessionId: "",
+            sessions: [],
+            messages: {},
+            task: { ...current.task, id: "", steps: [], toolCalls: [] },
+          }
+        : current,
     );
   }, []);
 
@@ -228,13 +264,25 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
     );
   }, []);
 
-  const createSession = useCallback(() => {
-    const id = `session-${Date.now()}`;
+  const createSession = useCallback(async () => {
+    const projectId = snapshot?.activeProjectId;
+    if (!projectId) {
+      return;
+    }
+    const backendSession = await workspaceApi.createSession(projectId);
+    const id = backendSession.id;
     setSnapshot((current) =>
       current
-        ? {
-            ...current,
+          ? {
+              ...current,
             activeSessionId: id,
+            task: {
+              ...current.task,
+              id: "",
+              status: "CREATED",
+              steps: [],
+              toolCalls: [],
+            },
             sessions: [
               {
                 id,
@@ -252,7 +300,7 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
           }
         : current,
     );
-  }, []);
+  }, [snapshot?.activeProjectId]);
 
   const sendMessage = useCallback(
     async (content: string) => {
@@ -299,26 +347,37 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
         };
       });
 
-      const assistantMessage = await workspaceApi.sendMessage(
+      const activeProjectId = snapshot?.activeProjectId;
+      if (!activeProjectId) {
+        return;
+      }
+      const result = await workspaceApi.sendMessage(
         activeSessionId,
+        activeProjectId,
         trimmed,
       );
       setSnapshot((current) =>
         current
           ? {
               ...current,
+              task: result.task ? taskFromBackend(result.task) : current.task,
               messages: {
                 ...current.messages,
                 [activeSessionId]: [
                   ...(current.messages[activeSessionId] || []),
-                  assistantMessage,
+                  result.message,
                 ],
               },
             }
           : current,
       );
+      if (result.task) {
+        void workspaceApi.runTask(result.task.id).catch((caught: unknown) => {
+          setError(caught instanceof Error ? caught.message : "任务启动失败");
+        });
+      }
     },
-    [snapshot?.activeSessionId],
+    [snapshot?.activeProjectId, snapshot?.activeSessionId],
   );
 
   const openFile = useCallback((path: string, line?: number) => {
@@ -372,6 +431,9 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
   const controlTask = useCallback(
     async (action: "pause" | "resume" | "cancel") => {
       if (!snapshot) {
+        return;
+      }
+      if (!snapshot.task.id) {
         return;
       }
       const result = await workspaceApi.controlTask(snapshot.task.id, action);

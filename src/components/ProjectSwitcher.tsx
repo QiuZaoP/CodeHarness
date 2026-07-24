@@ -64,8 +64,8 @@ export function ProjectSwitcher() {
             <FolderGit2 size={17} />
           </span>
           <span className="project-switcher__copy">
-            <strong>{activeProject.name}</strong>
-            <small>{activeProject.branch}</small>
+            <strong>{activeProject?.name || "选择项目"}</strong>
+            <small>{activeProject?.branch || "尚未导入"}</small>
           </span>
           <ChevronDown size={15} />
         </button>

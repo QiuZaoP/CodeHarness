@@ -69,9 +69,7 @@ export function ConversationPane() {
               </article>
             ))
           )}
-          {snapshot.activeSessionId === "session-login" ? (
-            <TaskProgress />
-          ) : null}
+          {snapshot.task.id ? <TaskProgress /> : null}
         </div>
       </div>
       <Composer />

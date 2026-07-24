@@ -1,5 +1,8 @@
 import { initialSnapshot } from "../data/mockData";
 import type {
+  BackendProject,
+  BackendSession,
+  BackendTask,
   FileChange,
   Message,
   Project,
@@ -26,10 +29,52 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    throw new Error(`Request failed with status ${response.status}`);
+    const body = (await response.json().catch(() => null)) as
+      | { error?: { code?: string; message?: string } }
+      | null;
+    const message = body?.error?.message || `Request failed with status ${response.status}`;
+    throw new Error(body?.error?.code ? `${body.error.code}: ${message}` : message);
   }
 
   return response.json() as Promise<T>;
+}
+
+function projectNameFromPath(projectPath: string) {
+  return projectPath.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "untitled-project";
+}
+
+function mapBackendProject(project: BackendProject): Project {
+  return {
+    id: project.id,
+    name: project.name,
+    path: project.sourcePath,
+    branch: "workspace",
+    language: "待识别",
+    indexedFiles: 0,
+    lastOpened: "刚刚",
+  };
+}
+
+function mapBackendTask(task: BackendTask) {
+  return {
+    id: task.id,
+    status: task.status,
+    startedAt: task.createdAt,
+    elapsed: "运行中",
+    model: "Harness runtime",
+    steps:
+      task.plan?.steps.map((step) => ({
+        id: step.id,
+        label: step.title,
+        status:
+          step.status === "DONE"
+            ? ("completed" as const)
+            : step.status === "RUNNING"
+              ? ("active" as const)
+              : ("pending" as const),
+      })) || [],
+    toolCalls: [],
+  };
 }
 
 export const workspaceApi = {
@@ -38,7 +83,29 @@ export const workspaceApi = {
       await delay(180);
       return structuredClone(initialSnapshot);
     }
-    return request<WorkspaceSnapshot>("/api/workspace");
+
+    await request<{ status: string }>("/api/health");
+    const snapshot = structuredClone(initialSnapshot);
+    return {
+      ...snapshot,
+      projects: [],
+      activeProjectId: "",
+      sessions: [],
+      activeSessionId: "",
+      messages: {},
+      fileTree: [],
+      files: {},
+      activeFilePath: "",
+      openFilePaths: [],
+      task: {
+        ...snapshot.task,
+        id: "",
+        status: "CREATED",
+        steps: [],
+        toolCalls: [],
+      },
+      changes: [],
+    };
   },
 
   async importProject(path: string): Promise<Project> {
@@ -56,44 +123,85 @@ export const workspaceApi = {
       };
     }
 
-    return request<Project>("/api/projects/import", {
+    const project = await request<BackendProject>("/api/v1/projects", {
       method: "POST",
-      body: JSON.stringify({ path }),
+      body: JSON.stringify({ name: projectNameFromPath(path), sourcePath: path }),
+    });
+    return mapBackendProject(project);
+  },
+
+  async createSession(
+    projectId: string,
+    title = "新任务",
+  ): Promise<BackendSession> {
+    if (useMock) {
+      await delay(120);
+      return {
+        id: `session-${Date.now()}`,
+        projectId,
+        title,
+        createdAt: new Date().toISOString(),
+      };
+    }
+
+    return request<BackendSession>("/api/v1/sessions", {
+      method: "POST",
+      body: JSON.stringify({ projectId, title }),
     });
   },
 
-  async sendMessage(sessionId: string, content: string): Promise<Message> {
+  async sendMessage(
+    sessionId: string,
+    projectId: string,
+    content: string,
+  ): Promise<{ message: Message; task?: BackendTask }> {
     if (useMock) {
       await delay(520);
       return {
-        id: `assistant-${Date.now()}`,
+        message: {
+          id: `assistant-${Date.now()}`,
+          role: "assistant",
+          content:
+            "收到。我已把目标加入当前任务，并会先核对工作区状态和相关文件，再进行受控修改。",
+          createdAt: new Date().toLocaleTimeString("zh-CN", {
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+          }),
+        },
+      };
+    }
+
+    const task = await request<BackendTask>("/api/v1/tasks", {
+      method: "POST",
+      body: JSON.stringify({ projectId, sessionId, goal: content }),
+    });
+    return {
+      task,
+      message: {
+        id: `assistant-${task.id}`,
         role: "assistant",
-        content:
-          "收到。我已把目标加入当前任务，并会先核对工作区状态和相关文件，再进行受控修改。",
+        content: "已创建任务。Harness 正在执行前置检查和规划，请查看任务进度。",
         createdAt: new Date().toLocaleTimeString("zh-CN", {
           hour: "2-digit",
           minute: "2-digit",
           hour12: false,
         }),
-      };
-    }
+      },
+    };
+  },
 
-    return request<Message>(`/api/sessions/${sessionId}/messages`, {
-      method: "POST",
-      body: JSON.stringify({ content }),
-    });
+  async runTask(taskId: string): Promise<BackendTask | undefined> {
+    if (useMock) {
+      return undefined;
+    }
+    return request<BackendTask>(`/api/v1/tasks/${taskId}/run`, { method: "POST" });
   },
 
   async searchFiles(
     snapshot: WorkspaceSnapshot,
     query: string,
   ): Promise<SearchResult[]> {
-    if (!useMock) {
-      return request<SearchResult[]>(
-        `/api/search?q=${encodeURIComponent(query)}`,
-      );
-    }
-
     await delay(120);
     const normalized = query.trim().toLocaleLowerCase();
     if (!normalized) {
@@ -136,22 +244,19 @@ export const workspaceApi = {
       };
     }
 
-    return request(`/api/tasks/${taskId}/${action}`, { method: "POST" });
+    const endpoint = action === "resume" ? "run" : action;
+    return request(`/api/v1/tasks/${taskId}/${endpoint}`, { method: "POST" });
   },
 
   async decideChange(
     changeId: string,
     decision: FileChange["decision"],
   ): Promise<void> {
-    if (useMock) {
-      await delay(120);
-      return;
-    }
-
-    await request(`/api/changes/${changeId}`, {
-      method: "PATCH",
-      body: JSON.stringify({ decision }),
-    });
+    // The develop contract does not expose a change-decision endpoint yet.
+    // Keep review decisions local until that API is published.
+    void changeId;
+    void decision;
+    await delay(120);
   },
 
   async rollbackTask(taskId: string): Promise<void> {
@@ -160,6 +265,8 @@ export const workspaceApi = {
       return;
     }
 
-    await request(`/api/tasks/${taskId}/rollback`, { method: "POST" });
+    await request(`/api/v1/tasks/${taskId}/rollback`, { method: "POST" });
   },
+
+  mapBackendTask,
 };

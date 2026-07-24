@@ -10,6 +10,7 @@ export type Project = {
 
 export type Session = {
   id: string;
+  projectId?: string;
   title: string;
   preview: string;
   updatedAt: string;
@@ -56,6 +57,8 @@ export type TaskRun = {
     | "EXECUTING"
     | "VERIFYING"
     | "READY_FOR_REVIEW"
+    | "APPLIED"
+    | "WAITING_USER"
     | "PAUSED"
     | "CANCELLED"
     | "FAILED";
@@ -125,23 +128,58 @@ export type WorkspaceSnapshot = {
   changes: FileChange[];
 };
 
-export type WorkspaceEvent =
-  | {
-      type: "task.status";
-      taskId: string;
-      status: TaskRun["status"];
-    }
-  | {
-      type: "tool.updated";
-      taskId: string;
-      tool: ToolCall;
-    }
-  | {
-      type: "message.created";
-      sessionId: string;
-      message: Message;
-    }
-  | {
-      type: "change.updated";
-      change: FileChange;
-    };
+export type WorkspaceEvent = {
+  id: number;
+  taskId: string;
+  type:
+    | "task.created"
+    | "task.state_changed"
+    | "task.plan.updated"
+    | "tool.started"
+    | "tool.completed"
+    | "task.completed"
+    | "task.failed"
+    | "task.waiting_user"
+    | "task.paused";
+  timestamp: string;
+  payload: Record<string, unknown>;
+};
+
+export type BackendProject = {
+  id: string;
+  name: string;
+  sourcePath: string;
+  workspacePath: string;
+  createdAt: string;
+};
+
+export type BackendSession = {
+  id: string;
+  projectId: string;
+  title: string;
+  createdAt: string;
+};
+
+export type BackendPlan = {
+  goal: string;
+  assumptions: string[];
+  steps: Array<{
+    id: string;
+    title: string;
+    status: "PENDING" | "RUNNING" | "DONE";
+  }>;
+  verification: string[];
+};
+
+export type BackendTask = {
+  id: string;
+  sessionId: string;
+  projectId: string;
+  goal: string;
+  status: TaskRun["status"];
+  plan?: BackendPlan;
+  workspacePath: string;
+  createdAt: string;
+  updatedAt: string;
+  stopReason?: string;
+};
