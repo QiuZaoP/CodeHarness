@@ -42,3 +42,26 @@ git switch -c feature/<your-name>-<short-description>
 - 跨模块接口先更新协议和契约测试，再修改实现。
 - 所有代码变更都应附带测试结果和已知风险。
 - 任何涉及文件修改或命令执行的智能体能力，都必须保留 Diff、审计记录和回滚能力。
+
+## 后端开发
+
+环境要求：Node.js 22+ 和 npm 10+。
+
+```powershell
+Copy-Item .env.example .env
+npm install
+npm run dev
+```
+
+服务启动后访问：
+
+- 健康检查：`http://127.0.0.1:3000/api/health`
+- OpenAPI：`http://127.0.0.1:3000/api/v1/openapi.json`
+
+在没有真实模型和解析器之前，后端使用 Mock Harness、文本检索和临时项目工作区跑通任务闭环。完整检查命令：
+
+```powershell
+npm run check
+```
+
+首期 API 流程是：创建项目 -> 创建会话 -> 创建任务 -> 运行任务。项目创建接口的 `sourcePath` 必须是后端进程可访问的本地目录。

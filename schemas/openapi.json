@@ -1,0 +1,125 @@
+{
+  "openapi": "3.1.0",
+  "info": { "title": "CodeHarness Backend API", "version": "0.1.0" },
+  "servers": [{ "url": "http://127.0.0.1:3000" }],
+  "paths": {
+    "/api/health": { "get": { "responses": { "200": { "description": "Service health" } } } },
+    "/api/v1/projects": {
+      "post": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/ProjectCreate" } }
+          }
+        },
+        "responses": {
+          "201": { "description": "Project created" },
+          "400": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/sessions": {
+      "post": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/SessionCreate" } }
+          }
+        },
+        "responses": { "201": { "description": "Session created" } }
+      }
+    },
+    "/api/v1/tasks": {
+      "post": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/TaskCreate" } }
+          }
+        },
+        "responses": { "201": { "description": "Task created" } }
+      }
+    },
+    "/api/v1/tasks/{taskId}": {
+      "get": {
+        "parameters": [{ "$ref": "#/components/parameters/TaskId" }],
+        "responses": { "200": { "description": "Task" } }
+      }
+    },
+    "/api/v1/tasks/{taskId}/run": {
+      "post": {
+        "parameters": [{ "$ref": "#/components/parameters/TaskId" }],
+        "responses": { "200": { "description": "Task run result" } }
+      }
+    },
+    "/api/v1/tasks/{taskId}/events": {
+      "get": {
+        "parameters": [{ "$ref": "#/components/parameters/TaskId" }],
+        "responses": {
+          "200": {
+            "description": "Server-sent event stream",
+            "content": { "text/event-stream": {} }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "TaskId": {
+        "name": "taskId",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" }
+      }
+    },
+    "schemas": {
+      "ProjectCreate": {
+        "type": "object",
+        "required": ["name", "sourcePath"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "sourcePath": { "type": "string", "minLength": 1 }
+        }
+      },
+      "SessionCreate": {
+        "type": "object",
+        "required": ["projectId"],
+        "properties": {
+          "projectId": { "type": "string", "format": "uuid" },
+          "title": { "type": "string" }
+        }
+      },
+      "TaskCreate": {
+        "type": "object",
+        "required": ["projectId", "sessionId", "goal"],
+        "properties": {
+          "projectId": { "type": "string", "format": "uuid" },
+          "sessionId": { "type": "string", "format": "uuid" },
+          "goal": { "type": "string", "minLength": 1 }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": ["code", "message"],
+            "properties": {
+              "code": { "type": "string" },
+              "message": { "type": "string" },
+              "details": {}
+            }
+          }
+        }
+      }
+    },
+    "responses": {
+      "Error": {
+        "description": "Structured error",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      }
+    }
+  }
+}

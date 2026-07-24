@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeharness.local/schemas/event.schema.json",
+  "type": "object",
+  "required": ["taskId", "timestamp"],
+  "properties": {
+    "taskId": { "type": "string", "format": "uuid" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "status": { "$ref": "task-status.schema.json" },
+    "toolName": { "type": "string" },
+    "message": { "type": "string" }
+  },
+  "additionalProperties": true
+}

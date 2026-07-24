@@ -1,0 +1,44 @@
+{
+  "name": "codeharness",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CodeHarness repository intelligence assistant backend",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "tsx backend/src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/backend/src/server.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint backend/src backend/test scripts --max-warnings=0",
+    "format:check": "prettier --check backend schemas scripts *.json README.md CONTRIBUTING.md .github/workflows",
+    "schema:check": "tsx scripts/validate-schemas.ts",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run schema:check && npm test",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@fastify/cors": "^10.0.2",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "better-sqlite3": "^11.8.1",
+    "dotenv": "^16.4.7",
+    "fastify": "^5.2.1",
+    "pino": "^9.6.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.20.0",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.13.4",
+    "@typescript-eslint/eslint-plugin": "^8.24.0",
+    "@typescript-eslint/parser": "^8.24.0",
+    "eslint": "^9.20.1",
+    "prettier": "^3.5.3",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.24.0",
+    "vitest": "^3.0.6"
+  }
+}
