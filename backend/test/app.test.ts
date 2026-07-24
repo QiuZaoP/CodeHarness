@@ -95,7 +95,8 @@ describe('backend API', () => {
       ])
     );
     expect(db.getWorkspaceSnapshots(task.id)).toEqual([
-      expect.objectContaining({ taskId: task.id, kind: 'BASELINE' })
+      expect.objectContaining({ taskId: task.id, kind: 'BASELINE' }),
+      expect.objectContaining({ taskId: task.id, kind: 'FINAL' })
     ]);
     expect(db.getToolCalls(task.id)).toHaveLength(4);
     expect(db.getToolCalls(task.id).every((call) => call.status === 'SUCCEEDED')).toBe(true);

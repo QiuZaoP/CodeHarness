@@ -68,9 +68,9 @@ describe('database migrations and repositories', () => {
     const file = await databasePath('codeharness-schema-');
     const database = new AppDatabase(file);
     try {
-      expect(database.getSchemaVersion()).toBe(5);
+      expect(database.getSchemaVersion()).toBe(6);
       expect(database.getAppliedMigrations().map(({ version }) => version)).toEqual([
-        1, 2, 3, 4, 5
+        1, 2, 3, 4, 5, 6
       ]);
       expect(database.connection.pragma('foreign_keys', { simple: true })).toBe(1);
       const tables = database.connection
@@ -180,7 +180,7 @@ describe('database migrations and repositories', () => {
 
     const upgraded = new AppDatabase(file);
     try {
-      expect(upgraded.getSchemaVersion()).toBe(5);
+      expect(upgraded.getSchemaVersion()).toBe(6);
       expect(upgraded.getTask(taskId)).toMatchObject({
         id: taskId,
         goal: 'Keep this task',
@@ -424,6 +424,56 @@ describe('database migrations and repositories', () => {
         .prepare("UPDATE task_run_checkpoints SET state_json = '{not-json' WHERE task_id = ?")
         .run(task.id);
       expect(() => database.getTaskRun(task.id)).toThrow('Stored JSON is invalid');
+    } finally {
+      database.close();
+    }
+  });
+
+  it('persists optimistic file review decisions across database restarts', async () => {
+    const file = await databasePath('codeharness-file-review-');
+    let database = new AppDatabase(file);
+    const task = seedTask(database);
+    const changeId = randomUUID();
+    database.replaceFileChanges(task.id, [
+      {
+        id: changeId,
+        taskId: task.id,
+        path: 'generated.txt',
+        status: 'ADDED',
+        additions: 1,
+        deletions: 0,
+        patch: 'diff --git a/generated.txt b/generated.txt\n',
+        decision: 'PENDING'
+      }
+    ]);
+    expect(
+      database.decideFileChange(task.id, changeId, 'REJECTED', 1, timestamp).change
+    ).toMatchObject({
+      decision: 'REJECTED',
+      version: 2
+    });
+    database.close();
+
+    database = new AppDatabase(file);
+    try {
+      expect(database.getFileChanges(task.id)).toEqual([
+        expect.objectContaining({
+          id: changeId,
+          decision: 'REJECTED',
+          version: 2
+        })
+      ]);
+      expect(database.getAuditRecords('file_change', changeId)).toEqual([
+        expect.objectContaining({
+          action: 'change.decision_updated',
+          before: { decision: 'PENDING', version: 1 },
+          after: { decision: 'REJECTED', version: 2 }
+        })
+      ]);
+      expect(database.getEvents(task.id).at(-1)).toMatchObject({
+        type: 'change.updated',
+        payload: { changeId, decision: 'REJECTED' }
+      });
     } finally {
       database.close();
     }

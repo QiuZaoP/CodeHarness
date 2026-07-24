@@ -7,6 +7,7 @@ import { TextDecoder } from 'node:util';
 import { config } from './config.js';
 import { AppError } from './errors.js';
 import type { SourceGitMetadata, SourceMetadata, WorkspaceSnapshot } from './types.js';
+import type { FileChange, FileChangeStatus } from './types.js';
 
 const ignoredSourceEntries = new Set([
   '.git',
@@ -65,6 +66,14 @@ export interface WorkspaceTextFile {
   content: string;
   bytesRead: number;
   truncated: boolean;
+}
+
+export interface WorkspaceDiffFile {
+  path: string;
+  status: Exclude<FileChangeStatus, 'RENAMED'>;
+  additions: number;
+  deletions: number;
+  patch: string;
 }
 
 const defaultOptions: WorkspaceOptions = {
@@ -326,16 +335,180 @@ export class WorkspaceManager {
 
   async getDiff(workspace: string): Promise<string> {
     const root = await this.requireManagedWorkspace(workspace);
+    return this.withTemporaryIndex(root, (indexPath) =>
+      this.runGit(
+        root,
+        ['diff', '--cached', '--binary', '--no-ext-diff', '--no-textconv', 'HEAD'],
+        indexPath
+      )
+    );
+  }
+
+  async getStructuredDiff(workspace: string): Promise<WorkspaceDiffFile[]> {
+    const root = await this.requireManagedWorkspace(workspace);
+    return this.withTemporaryIndex(root, async (indexPath) => {
+      const raw = await this.runGit(
+        root,
+        ['diff', '--cached', '--name-status', '-z', '--no-renames', 'HEAD'],
+        indexPath
+      );
+      const fields = raw.split('\0').filter((value) => value.length > 0);
+      const files: WorkspaceDiffFile[] = [];
+      for (let index = 0; index < fields.length; index += 2) {
+        const code = fields[index]!;
+        const filePath = fields[index + 1];
+        if (!filePath || !['A', 'M', 'D'].includes(code)) {
+          throw new AppError('WORKSPACE_ERROR', 'Git returned an unsupported Diff status', {
+            code,
+            filePath
+          });
+        }
+        const patch = await this.runGit(
+          root,
+          [
+            'diff',
+            '--cached',
+            '--binary',
+            '--no-ext-diff',
+            '--no-textconv',
+            'HEAD',
+            '--',
+            filePath
+          ],
+          indexPath
+        );
+        const lines = patch.split(/\r?\n/);
+        files.push({
+          path: filePath.replaceAll('\\', '/'),
+          status: ({ A: 'ADDED', M: 'MODIFIED', D: 'DELETED' } as const)[code as 'A' | 'M' | 'D'],
+          additions: lines.filter((line) => line.startsWith('+') && !line.startsWith('+++')).length,
+          deletions: lines.filter((line) => line.startsWith('-') && !line.startsWith('---')).length,
+          patch
+        });
+      }
+      return files;
+    });
+  }
+
+  async applyAcceptedChanges<T>(
+    taskId: string,
+    workspace: string,
+    sourcePath: string,
+    baseline: WorkspaceSnapshot,
+    changes: readonly FileChange[],
+    commit: () => T | Promise<T>
+  ): Promise<T> {
+    assertIdentifier(taskId, 'taskId');
+    const taskPath = this.taskPath(taskId);
+    const expectedWorkspace = path.join(taskPath, 'worktree');
+    if (path.resolve(workspace) !== expectedWorkspace) {
+      throw new AppError('WORKSPACE_ERROR', 'Task workspace path does not match its task', {
+        taskId
+      });
+    }
+    await this.requireManagedWorkspace(workspace);
+    const source = await this.requireSourceDirectory(sourcePath);
+    await fs.access(source, fsConstants.R_OK | fsConstants.W_OK);
+    const baselinePath = await this.requireBaseline(taskPath, baseline);
+    const baselineTree = path.join(baselinePath, 'tree');
+    await this.verifySnapshot(baselineTree, baseline.rootHash);
+    const accepted = changes.filter(({ decision }) => decision === 'ACCEPTED');
+    const backupRoot = path.join(taskPath, `apply-backup-${randomUUID()}`);
+    const prepared: Array<{
+      change: FileChange;
+      target: string;
+      workspaceFile: string;
+      existed: boolean;
+    }> = [];
+    await fs.mkdir(backupRoot);
+    try {
+      for (const change of accepted) {
+        if (change.status === 'RENAMED') {
+          throw new AppError('WORKSPACE_ERROR', 'Renamed changes require explicit source paths');
+        }
+        const target = await this.resolveTreePath(source, change.path, true);
+        const baselineFile = await this.resolveTreePath(baselineTree, change.path, true);
+        const workspaceFile = await this.resolveTreePath(workspace, change.path, true);
+        const targetStat = await fs.lstat(target).catch(() => undefined);
+        const baselineStat = await fs.lstat(baselineFile).catch(() => undefined);
+        const workspaceStat = await fs.lstat(workspaceFile).catch(() => undefined);
+        if (targetStat?.isSymbolicLink() || baselineStat?.isSymbolicLink()) {
+          throw new AppError('FORBIDDEN', 'Source changes cannot traverse symbolic links', {
+            path: change.path
+          });
+        }
+        if (change.status === 'ADDED') {
+          if (targetStat || baselineStat || !workspaceStat?.isFile()) {
+            throw new AppError('CONFLICT', 'Added file no longer has a safe source baseline', {
+              path: change.path
+            });
+          }
+        } else if (change.status === 'MODIFIED') {
+          if (
+            !targetStat?.isFile() ||
+            !baselineStat?.isFile() ||
+            !workspaceStat?.isFile() ||
+            hash(await fs.readFile(target)) !== hash(await fs.readFile(baselineFile))
+          ) {
+            throw new AppError('CONFLICT', 'Source file changed after task creation', {
+              path: change.path
+            });
+          }
+        } else if (
+          !targetStat?.isFile() ||
+          !baselineStat?.isFile() ||
+          workspaceStat ||
+          hash(await fs.readFile(target)) !== hash(await fs.readFile(baselineFile))
+        ) {
+          throw new AppError('CONFLICT', 'Deleted source file changed after task creation', {
+            path: change.path
+          });
+        }
+        if (targetStat) {
+          const backup = path.join(backupRoot, change.path);
+          await fs.mkdir(path.dirname(backup), { recursive: true });
+          await fs.copyFile(target, backup);
+          await fs.chmod(backup, targetStat.mode & 0o777);
+        }
+        prepared.push({ change, target, workspaceFile, existed: Boolean(targetStat) });
+      }
+
+      let applied = 0;
+      try {
+        for (const item of prepared) {
+          if (item.change.status === 'DELETED') {
+            await fs.rm(item.target);
+          } else {
+            await this.atomicCopyFile(item.workspaceFile, item.target);
+          }
+          applied += 1;
+        }
+        return await commit();
+      } catch (error) {
+        for (const item of prepared.slice(0, applied).reverse()) {
+          if (item.existed) {
+            await this.atomicCopyFile(path.join(backupRoot, item.change.path), item.target);
+          } else {
+            await fs.rm(item.target, { force: true });
+          }
+        }
+        throw error;
+      }
+    } finally {
+      await this.removeValidated(backupRoot, taskPath).catch(() => undefined);
+    }
+  }
+
+  private async withTemporaryIndex<T>(
+    root: string,
+    operation: (indexPath: string) => Promise<T>
+  ): Promise<T> {
     const indexPath = path.join(root, '.git', `codeharness-index-${randomUUID()}`);
     const normalIndex = path.join(root, '.git', 'index');
     await fs.copyFile(normalIndex, indexPath);
     try {
       await this.runGit(root, ['add', '-A'], indexPath);
-      return await this.runGit(
-        root,
-        ['diff', '--cached', '--binary', '--no-ext-diff', '--no-textconv', 'HEAD'],
-        indexPath
-      );
+      return await operation(indexPath);
     } finally {
       await fs.rm(indexPath, { force: true });
       await fs.rm(`${indexPath}.lock`, { force: true });
@@ -895,6 +1068,56 @@ export class WorkspaceManager {
       throw new AppError('WORKSPACE_ERROR', 'Task path escaped the workspace root');
     }
     return result;
+  }
+
+  private async resolveTreePath(
+    root: string,
+    requestedPath: string,
+    allowMissing: boolean
+  ): Promise<string> {
+    if (
+      !requestedPath ||
+      requestedPath.includes('\0') ||
+      path.isAbsolute(requestedPath) ||
+      path.win32.isAbsolute(requestedPath)
+    ) {
+      throw new AppError('FORBIDDEN', 'File change path must be relative', { requestedPath }, 403);
+    }
+    const candidate = path.resolve(root, requestedPath);
+    if (!isWithin(root, candidate)) {
+      throw new AppError('FORBIDDEN', 'File change path escaped its root', { requestedPath }, 403);
+    }
+    let cursor = root;
+    for (const part of path.relative(root, candidate).split(path.sep).filter(Boolean)) {
+      cursor = path.join(cursor, part);
+      const stat = await fs.lstat(cursor).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT' && allowMissing) return undefined;
+        throw error;
+      });
+      if (!stat) break;
+      if (stat.isSymbolicLink()) {
+        throw new AppError('FORBIDDEN', 'File change path contains a symbolic link', {
+          requestedPath
+        });
+      }
+    }
+    return candidate;
+  }
+
+  private async atomicCopyFile(source: string, target: string): Promise<void> {
+    const sourceStat = await fs.lstat(source);
+    if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) {
+      throw new AppError('WORKSPACE_ERROR', 'Apply source is not a regular file', { source });
+    }
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    const temporary = path.join(path.dirname(target), `.codeharness-apply-${randomUUID()}.tmp`);
+    try {
+      await fs.copyFile(source, temporary);
+      await fs.chmod(temporary, sourceStat.mode & 0o777);
+      await fs.rename(temporary, target);
+    } finally {
+      await fs.rm(temporary, { force: true });
+    }
   }
 
   private async removeValidated(target: string, parent: string): Promise<void> {

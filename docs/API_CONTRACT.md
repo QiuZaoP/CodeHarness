@@ -46,8 +46,8 @@
   目标。
 - `resume` 接受带恢复目标的 `PAUSED` 或 `WAITING_USER`，获取新租约后返回 `202 Accepted`。
 - `cancel` 将允许的非终态任务转为终态 `CANCELLED`；重复取消返回 `409 CONFLICT`。
-- `apply` 当前只把 `READY_FOR_REVIEW` 转为 `APPLIED`，不把 Diff 写回项目源目录；文件级
-  审批和目标仓库应用属于后续交付阶段。
+- `apply` 要求所有文件变更已审阅，只把 `ACCEPTED` 文件安全写入项目源目录；源文件偏离
+  任务基线或任务工作区 Diff 偏离审阅版本时返回 `409 CONFLICT`。
 - `rollback` 使用数据库中的基线快照哈希验证并恢复当前任务的独立工作区，成功后将任务转为
   `CANCELLED`；不会修改项目源目录或删除基线快照。
 

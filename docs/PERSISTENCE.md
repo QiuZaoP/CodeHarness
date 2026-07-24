@@ -68,6 +68,7 @@
 - 项目记录包含源目录 manifest 摘要和 Git 元数据；完整 manifest 保存在受管项目目录。
 - 工作区已经按任务隔离，快照元数据持久化；文件布局、校验和回滚规则见
   [WORKSPACES.md](WORKSPACES.md)。
-- `file_changes` 的审批/应用和完整验证编排将在后续阶段接入。
+- `file_changes` 保存乐观版本、工具/步骤来源和文件级审阅决定；更新决定、事件与审计同
+  事务，安全应用规则见 [CHANGES.md](CHANGES.md)。
 - `task_run_checkpoints` 保存服务重启后仍需继续累计的上下文引用、模型用量、工具次数、
   读取字节、变更文件和验证次数；具体规则见 [CONTEXT_BUDGET.md](CONTEXT_BUDGET.md)。

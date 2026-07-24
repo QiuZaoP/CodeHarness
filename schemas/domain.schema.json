@@ -577,7 +577,10 @@
         "additions": { "type": "integer", "minimum": 0 },
         "deletions": { "type": "integer", "minimum": 0 },
         "patch": { "type": "string" },
-        "decision": { "$ref": "#/$defs/changeDecision" }
+        "decision": { "$ref": "#/$defs/changeDecision" },
+        "toolCallId": { "$ref": "#/$defs/id" },
+        "stepId": { "type": "string", "minLength": 1 },
+        "version": { "type": "integer", "minimum": 1 }
       },
       "additionalProperties": false
     },
@@ -593,6 +596,47 @@
         "outputSummary": { "type": "string" },
         "failureCategory": { "$ref": "#/$defs/verificationFailureCategory" },
         "createdAt": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": false
+    },
+    "taskReport": {
+      "type": "object",
+      "required": [
+        "taskId",
+        "status",
+        "summary",
+        "changes",
+        "verifications",
+        "toolCalls",
+        "risks",
+        "generatedAt"
+      ],
+      "properties": {
+        "taskId": { "$ref": "#/$defs/id" },
+        "status": { "$ref": "#/$defs/taskStatus" },
+        "summary": { "type": "string" },
+        "plan": { "$ref": "#/$defs/plan" },
+        "changes": { "type": "array", "items": { "$ref": "#/$defs/fileChange" } },
+        "verifications": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/verificationResult" }
+        },
+        "toolCalls": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "name", "status"],
+            "properties": {
+              "id": { "$ref": "#/$defs/id" },
+              "stepId": { "type": "string", "minLength": 1 },
+              "name": { "$ref": "#/$defs/toolName" },
+              "status": { "$ref": "#/$defs/toolCallStatus" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "risks": { "type": "array", "items": { "type": "string" } },
+        "generatedAt": { "$ref": "#/$defs/timestamp" }
       },
       "additionalProperties": false
     },

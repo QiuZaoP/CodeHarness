@@ -134,7 +134,7 @@ export class TaskScheduler {
     return this.harness.cancel(taskId);
   }
 
-  apply(taskId: string): StoredTask {
+  async apply(taskId: string): Promise<StoredTask> {
     this.assertInactive(taskId);
     return this.harness.apply(taskId);
   }

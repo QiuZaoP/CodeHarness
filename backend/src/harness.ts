@@ -13,12 +13,15 @@ import type { CodeIndex, ProjectOverview } from './ports/code-index.js';
 import { taskStateMachine } from './state-machine.js';
 import { contractSchemaVersion } from './types.js';
 import type {
+  ChangeDecision,
+  FileChange,
   HarnessObservation,
   HarnessTurn,
   ModelDecision,
   StoredTask,
   RunState,
   TaskPlan,
+  TaskReport,
   TaskStatus,
   ToolCall,
   ToolCallRecord,
@@ -199,6 +202,71 @@ export class HarnessRunner {
     return this.requireTask(taskId);
   }
 
+  getFileChanges(taskId: string): FileChange[] {
+    this.requireTask(taskId);
+    return this.dependencies.database.getFileChanges(taskId);
+  }
+
+  decideFileChange(
+    taskId: string,
+    changeId: string,
+    decision: Exclude<ChangeDecision, 'PENDING'>,
+    expectedVersion: number
+  ): FileChange {
+    const task = this.requireTask(taskId);
+    if (task.status !== 'READY_FOR_REVIEW') {
+      throw new AppError(
+        'CONFLICT',
+        'File changes can only be reviewed when the task is ready',
+        { taskId, status: task.status },
+        409
+      );
+    }
+    const result = this.dependencies.database.decideFileChange(
+      taskId,
+      changeId,
+      decision,
+      expectedVersion,
+      new Date().toISOString()
+    );
+    this.dependencies.broker.publish(result.event);
+    return result.change;
+  }
+
+  getReport(taskId: string): TaskReport {
+    const task = this.requireTask(taskId);
+    const changes = this.dependencies.database.getFileChanges(taskId);
+    const verifications = this.dependencies.database.getVerificationResults(taskId);
+    const toolCalls = this.dependencies.database.getToolCalls(taskId).map((call) => ({
+      id: call.id,
+      stepId: call.stepId,
+      name: call.tool.name,
+      status: call.status
+    }));
+    const risks: string[] = [];
+    if (changes.some(({ decision }) => decision === 'PENDING')) {
+      risks.push('Some file changes are still pending review');
+    }
+    if (verifications.length === 0) risks.push('No verification command was recorded');
+    if (verifications.at(-1)?.status !== 'PASSED') {
+      risks.push('The latest verification result did not pass');
+    }
+    if (task.stopReason) risks.push(task.stopReason);
+    const report: TaskReport = {
+      taskId,
+      status: task.status,
+      summary: `${changes.length} file change(s), ${verifications.length} verification result(s)`,
+      plan: task.plan,
+      changes,
+      verifications,
+      toolCalls,
+      risks,
+      generatedAt: new Date().toISOString()
+    };
+    assertDomainContract('taskReport', report);
+    return report;
+  }
+
   pauseInterrupted(taskId: string, reason: string): StoredTask {
     const task = this.requireTask(taskId);
     const resumeStatus = taskStateMachine.pauseResumeTarget(task.status);
@@ -239,13 +307,48 @@ export class HarnessRunner {
     );
   }
 
-  apply(taskId: string): StoredTask {
+  async apply(taskId: string): Promise<StoredTask> {
     const task = this.requireTask(taskId);
-    return this.transition(
-      task,
-      'APPLIED',
-      { stopReason: null, resumeStatus: null, controlRequest: null },
-      [{ type: 'task.applied', payload: { changeCount: 0 } }]
+    if (task.status !== 'READY_FOR_REVIEW') {
+      throw new AppError(
+        'CONFLICT',
+        'Only a reviewed task can be applied',
+        { taskId, status: task.status },
+        409
+      );
+    }
+    const changes = this.dependencies.database.getFileChanges(taskId);
+    const pending = changes.filter(({ decision }) => decision === 'PENDING');
+    if (pending.length > 0) {
+      throw new AppError(
+        'CONFLICT',
+        'Every file change must be accepted or rejected before apply',
+        { pendingChangeIds: pending.map(({ id }) => id) },
+        409
+      );
+    }
+    await this.assertStoredDiffCurrent(task, changes);
+    const baseline = this.dependencies.database
+      .getWorkspaceSnapshots(task.id)
+      .find(({ kind }) => kind === 'BASELINE');
+    const project = this.dependencies.database.getProject(task.projectId);
+    if (!baseline || !project) {
+      throw new AppError('WORKSPACE_ERROR', 'Apply baseline or project source is missing');
+    }
+    const acceptedCount = changes.filter(({ decision }) => decision === 'ACCEPTED').length;
+    return this.dependencies.workspaceManager.applyAcceptedChanges(
+      task.id,
+      task.workspacePath,
+      project.sourcePath,
+      baseline,
+      changes,
+      () =>
+        this.transition(
+          this.requireTask(taskId),
+          'APPLIED',
+          { stopReason: null, resumeStatus: null, controlRequest: null },
+          [{ type: 'task.applied', payload: { changeCount: acceptedCount } }]
+        )
     );
   }
 
@@ -765,10 +868,10 @@ export class HarnessRunner {
     return this.afterFailureLimit(task, checkpoint, observation);
   }
 
-  private completeDecision(
+  private async completeDecision(
     task: StoredTask,
     decision: Extract<ModelDecision, { type: 'COMPLETE' }>
-  ): StoredTask {
+  ): Promise<StoredTask> {
     const planComplete = task.plan?.steps.every(({ status }) => status === 'DONE') ?? false;
     const verified =
       this.dependencies.database.getTaskRun(task.id)?.state.lastVerificationPassed === true;
@@ -785,6 +888,7 @@ export class HarnessRunner {
       const checkpoint = this.observeTurn(task.id, observation);
       return this.afterFailureLimit(task, checkpoint, observation);
     }
+    await this.finalizeChanges(task);
     this.observeTurn(task.id, { status: 'SUCCEEDED', summary: decision.summary });
     const latestVerification = this.dependencies.database
       .getVerificationResults(task.id)
@@ -801,6 +905,86 @@ export class HarnessRunner {
         }
       }
     ]);
+  }
+
+  private async finalizeChanges(task: StoredTask): Promise<void> {
+    const snapshots = this.dependencies.database.getWorkspaceSnapshots(task.id);
+    if (!snapshots.some(({ kind }) => kind === 'FINAL')) {
+      await this.checkpoint(task.id, 'FINAL');
+    }
+    const diff = await this.dependencies.workspaceManager.getStructuredDiff(task.workspacePath);
+    const toolCalls = this.dependencies.database.getToolCalls(task.id);
+    const sideEffectNames = new Set(
+      this.dependencies.tools
+        .definitions()
+        .filter(({ sideEffect }) => sideEffect)
+        .map(({ name }) => name)
+    );
+    const changes = this.dependencies.database.replaceFileChanges(
+      task.id,
+      diff.map((file): FileChange => {
+        const origin =
+          [...toolCalls]
+            .reverse()
+            .find(({ result }) => result?.affectedFiles.includes(file.path)) ??
+          [...toolCalls]
+            .reverse()
+            .find(({ status, tool }) => status === 'SUCCEEDED' && sideEffectNames.has(tool.name));
+        if (!origin) {
+          throw new AppError(
+            'WORKSPACE_ERROR',
+            'A workspace change cannot be traced to a completed side-effect tool',
+            { path: file.path }
+          );
+        }
+        return {
+          id: randomUUID(),
+          taskId: task.id,
+          path: file.path,
+          status: file.status,
+          additions: file.additions,
+          deletions: file.deletions,
+          patch: file.patch,
+          decision: 'PENDING',
+          toolCallId: origin.id,
+          stepId: origin.stepId
+        };
+      })
+    );
+    const checkpoint = this.dependencies.database.getTaskRun(task.id);
+    if (checkpoint) {
+      this.saveRunCheckpoint(checkpoint, {
+        ...this.synchronizeRunState(checkpoint.state, this.requireTask(task.id)),
+        changedFiles: changes.map(({ path }) => path)
+      });
+    }
+  }
+
+  private async assertStoredDiffCurrent(
+    task: StoredTask,
+    storedChanges: readonly FileChange[]
+  ): Promise<void> {
+    const current = await this.dependencies.workspaceManager.getStructuredDiff(task.workspacePath);
+    const normalizedStored = storedChanges
+      .map(({ path, status, additions, deletions, patch }) => ({
+        path,
+        status,
+        additions,
+        deletions,
+        patch
+      }))
+      .sort((left, right) => left.path.localeCompare(right.path));
+    const normalizedCurrent = [...current].sort((left, right) =>
+      left.path.localeCompare(right.path)
+    );
+    if (JSON.stringify(normalizedStored) !== JSON.stringify(normalizedCurrent)) {
+      throw new AppError(
+        'CONFLICT',
+        'Task workspace changed after the review Diff was generated',
+        undefined,
+        409
+      );
+    }
   }
 
   private ensureActivePlanStep(task: StoredTask, checkpoint: TaskRunCheckpoint): TaskRunCheckpoint {

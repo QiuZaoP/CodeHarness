@@ -97,18 +97,41 @@ class BlockingTools implements ToolRegistrationPort {
   }
 }
 
+class WritingTools extends BlockingTools {
+  constructor() {
+    super(false);
+  }
+
+  override async execute(call: ToolCall, context: ToolExecutionContext): Promise<ToolResult> {
+    if (call.name !== 'write_file') return super.execute(call, context);
+    this.calls.push(structuredClone(call));
+    const filePath = path.join(context.workspacePath, String(call.arguments.path));
+    const content = String(call.arguments.content);
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(filePath, content);
+    return {
+      status: 'SUCCEEDED',
+      output: { path: call.arguments.path, bytes: Buffer.byteLength(content) },
+      affectedFiles: [String(call.arguments.path)],
+      durationMs: 0
+    };
+  }
+}
+
 interface Fixture {
   database: AppDatabase;
   harness: HarnessRunner;
   scheduler: TaskScheduler;
   task: StoredTask;
   tools: BlockingTools;
+  source: string;
 }
 
 interface FixtureOptions {
   modelGateway?: ModelGateway;
   budgetManager?: BudgetManager;
   blockFirstList?: boolean;
+  tools?: BlockingTools;
 }
 
 function defaultBudgetManager(): BudgetManager {
@@ -170,7 +193,7 @@ async function fixture(options: FixtureOptions = {}): Promise<Fixture> {
     title: 'Fixture',
     createdAt: new Date().toISOString()
   });
-  const tools = new BlockingTools(options.blockFirstList ?? true);
+  const tools = options.tools ?? new BlockingTools(options.blockFirstList ?? true);
   const harness = new HarnessRunner({
     database,
     broker: new EventBroker(),
@@ -206,7 +229,7 @@ async function fixture(options: FixtureOptions = {}): Promise<Fixture> {
     database.close();
     await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   });
-  return { database, harness, scheduler, task, tools };
+  return { database, harness, scheduler, task, tools, source };
 }
 
 function stateEvent(
@@ -227,6 +250,22 @@ const plannedTask: TaskPlan = {
   steps: [{ id: 'inspect', title: 'Inspect fixture', status: 'PENDING' }],
   verification: ['node --version']
 };
+
+function changeDecisions(filePath = 'generated.txt') {
+  return [
+    { type: 'PLAN_UPDATE' as const, reason: 'Plan first', plan: plannedTask },
+    {
+      type: 'TOOL_CALL' as const,
+      reason: 'Create a reviewed file',
+      tool: {
+        name: 'write_file' as const,
+        arguments: { path: filePath, content: 'generated\n' }
+      }
+    },
+    { type: 'VERIFY' as const, reason: 'Verify', commands: ['node --version'] },
+    { type: 'COMPLETE' as const, reason: 'Done', summary: 'Generated a file' }
+  ];
+}
 
 describe('task lifecycle scheduler', () => {
   it('stops at precheck when the isolated workspace already contains user changes', async () => {
@@ -274,7 +313,7 @@ describe('task lifecycle scheduler', () => {
     expect(database.getEvents(task.id).map(({ type }) => type)).toEqual(
       expect.arrayContaining(['task.paused', 'task.resumed', 'task.completed'])
     );
-    expect(scheduler.apply(task.id).status).toBe('APPLIED');
+    expect((await scheduler.apply(task.id)).status).toBe('APPLIED');
     expect(database.getEvents(task.id).at(-1)?.type).toBe('task.applied');
   });
 
@@ -658,5 +697,70 @@ describe('task lifecycle scheduler', () => {
       'FAILED'
     ]);
     expect(database.getEvents(task.id).map(({ type }) => type)).not.toContain('task.completed');
+  });
+
+  it('persists a final Diff, reviews it, and applies accepted files safely', async () => {
+    const tools = new WritingTools();
+    const { database, harness, scheduler, task, source } = await fixture({
+      tools,
+      modelGateway: new FakeModelGateway(changeDecisions())
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(database.getWorkspaceSnapshots(task.id).at(-1)?.kind).toBe('FINAL');
+    const [change] = harness.getFileChanges(task.id);
+    expect(change).toMatchObject({
+      path: 'generated.txt',
+      status: 'ADDED',
+      additions: 1,
+      deletions: 0,
+      decision: 'PENDING',
+      toolCallId: expect.any(String),
+      stepId: 'inspect',
+      version: 1
+    });
+    await expect(scheduler.apply(task.id)).rejects.toThrow(
+      'Every file change must be accepted or rejected'
+    );
+
+    expect(
+      harness.decideFileChange(task.id, change!.id, 'ACCEPTED', change!.version!)
+    ).toMatchObject({
+      decision: 'ACCEPTED',
+      version: 2
+    });
+    expect(harness.getReport(task.id)).toMatchObject({
+      taskId: task.id,
+      changes: [expect.objectContaining({ decision: 'ACCEPTED' })],
+      verifications: [expect.objectContaining({ status: 'PASSED' })],
+      risks: []
+    });
+    expect((await scheduler.apply(task.id)).status).toBe('APPLIED');
+    expect(await fs.readFile(path.join(source, 'generated.txt'), 'utf8')).toBe('generated\n');
+    expect(database.getEvents(task.id).map(({ type }) => type)).toEqual(
+      expect.arrayContaining(['change.updated', 'task.applied'])
+    );
+  });
+
+  it('does not overwrite a source path created after the task baseline', async () => {
+    const tools = new WritingTools();
+    const { database, harness, scheduler, task, source } = await fixture({
+      tools,
+      modelGateway: new FakeModelGateway(changeDecisions('conflict.txt'))
+    });
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+    const [change] = harness.getFileChanges(task.id);
+    harness.decideFileChange(task.id, change!.id, 'ACCEPTED', change!.version!);
+    await fs.writeFile(path.join(source, 'conflict.txt'), 'user content\n');
+
+    await expect(scheduler.apply(task.id)).rejects.toThrow(
+      'Added file no longer has a safe source baseline'
+    );
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(await fs.readFile(path.join(source, 'conflict.txt'), 'utf8')).toBe('user content\n');
   });
 });

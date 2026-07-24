@@ -259,6 +259,9 @@ export interface FileChange {
   deletions: number;
   patch: string;
   decision: ChangeDecision;
+  toolCallId?: string;
+  stepId?: string;
+  version?: number;
 }
 
 export interface VerificationResult {
@@ -270,6 +273,23 @@ export interface VerificationResult {
   outputSummary: string;
   failureCategory?: VerificationFailureCategory;
   createdAt: string;
+}
+
+export interface TaskReport {
+  taskId: string;
+  status: TaskStatus;
+  summary: string;
+  plan?: TaskPlan;
+  changes: FileChange[];
+  verifications: VerificationResult[];
+  toolCalls: Array<{
+    id: string;
+    stepId?: string;
+    name: ToolName;
+    status: ToolCallStatus;
+  }>;
+  risks: string[];
+  generatedAt: string;
 }
 
 export interface AuditRecord {

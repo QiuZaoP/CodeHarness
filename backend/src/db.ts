@@ -15,6 +15,10 @@ import {
   type StoredAuditRecord
 } from './database/repositories/audit-repository.js';
 import { EventRepository, type NewTaskEvent } from './database/repositories/event-repository.js';
+import {
+  FileChangeRepository,
+  type StoredFileChange
+} from './database/repositories/file-change-repository.js';
 import { ProjectRepository } from './database/repositories/project-repository.js';
 import { SessionRepository } from './database/repositories/session-repository.js';
 import { SnapshotRepository } from './database/repositories/snapshot-repository.js';
@@ -25,6 +29,8 @@ import { TaskStepRepository } from './database/repositories/task-step-repository
 import { ToolCallRepository } from './database/repositories/tool-call-repository.js';
 import { VerificationRepository } from './database/repositories/verification-repository.js';
 import type {
+  ChangeDecision,
+  FileChange,
   Message,
   StoredTask,
   TaskLease,
@@ -65,6 +71,7 @@ export class AppDatabase {
   private readonly tasks: TaskRepository;
   private readonly events: EventRepository;
   private readonly audits: AuditRepository;
+  private readonly fileChanges: FileChangeRepository;
   private readonly taskSteps: TaskStepRepository;
   private readonly taskLeases: TaskLeaseRepository;
   private readonly taskRuns: TaskRunRepository;
@@ -89,6 +96,7 @@ export class AppDatabase {
     this.tasks = new TaskRepository(this.connection);
     this.events = new EventRepository(this.connection);
     this.audits = new AuditRepository(this.connection);
+    this.fileChanges = new FileChangeRepository(this.connection);
     this.taskSteps = new TaskStepRepository(this.connection);
     this.taskLeases = new TaskLeaseRepository(this.connection);
     this.taskRuns = new TaskRunRepository(this.connection);
@@ -397,6 +405,52 @@ export class AppDatabase {
 
   getVerificationResults(taskId: string): VerificationResult[] {
     return this.verifications.listByTask(taskId);
+  }
+
+  replaceFileChanges(taskId: string, changes: readonly FileChange[]): StoredFileChange[] {
+    return this.writeTransaction(() => {
+      if (!this.tasks.findById(taskId)) {
+        throw new AppError('NOT_FOUND', 'Task not found', { taskId }, 404);
+      }
+      return this.fileChanges.replaceForTask(taskId, changes);
+    });
+  }
+
+  getFileChanges(taskId: string): StoredFileChange[] {
+    return this.fileChanges.listByTask(taskId);
+  }
+
+  decideFileChange(
+    taskId: string,
+    changeId: string,
+    decision: Exclude<ChangeDecision, 'PENDING'>,
+    expectedVersion: number,
+    timestamp: string
+  ): { change: StoredFileChange; event: TaskEvent } {
+    return this.writeTransaction(() => {
+      const before = this.fileChanges.findById(changeId);
+      if (!before || before.taskId !== taskId) {
+        throw new AppError('NOT_FOUND', 'File change not found', { taskId, changeId }, 404);
+      }
+      const change = this.fileChanges.updateDecision(changeId, taskId, decision, expectedVersion);
+      this.audits.create({
+        id: randomUUID(),
+        taskId,
+        action: 'change.decision_updated',
+        resourceType: 'file_change',
+        resourceId: changeId,
+        before: { decision: before.decision, version: before.version },
+        after: { decision: change.decision, version: change.version },
+        timestamp
+      });
+      const event = this.events.create({
+        taskId,
+        type: 'change.updated',
+        timestamp,
+        payload: { changeId, decision }
+      });
+      return { change, event };
+    });
   }
 
   private writeTransaction<T>(operation: () => T): T {
