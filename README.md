@@ -4,6 +4,37 @@ CodeHarness 是一款基于自研 Agent Harness 的代码库智能助手，支�
 
 ## 快速开始
 
+当前仓库包含角色一负责的前端工作台实现。未配置 `VITE_API_BASE_URL` 时会自动使用内置 Mock 数据，可以独立体验全部交互。
+
+```powershell
+npm install
+npm run dev
+```
+
+浏览器打开 `http://127.0.0.1:4173`。
+
+常用检查：
+
+```powershell
+npm run lint
+npm run test
+npm run build
+```
+
+接入后端时复制 `.env.example` 为 `.env.local`，设置 `VITE_API_BASE_URL`。前端 API 封装位于 `src/services/api.ts`。
+
+## 已实现的前端能力
+
+- 项目导入、项目切换、分支和索引状态展示
+- 会话列表、新建任务、消息发送和任务状态展示
+- 工具调用进度、暂停、继续和取消任务
+- 仓库文件树、代码标签页、行号及代码搜索
+- 多文件 Diff、逐文件或批量接受、拒绝及撤销决定
+- Mock 后端协议、集中状态管理和可调整的电脑端三栏布局
+- Vitest 与 Testing Library 前端测试
+
+## 协作开始方式
+
 1. 克隆仓库并进入项目目录。
 2. 从 `develop` 创建个人工作分支。
 3. 阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 和 [项目方案设计.md](项目方案设计.md)。
