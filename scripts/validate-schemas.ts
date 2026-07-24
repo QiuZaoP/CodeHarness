@@ -313,8 +313,18 @@ const runStateSample = {
     maxToolCalls: 40,
     maxDurationMs: 300_000,
     maxChangedFiles: 20,
+    maxInputTokens: 120_000,
+    maxOutputTokens: 16_000,
+    maxCost: 10,
+    maxReadBytes: 262_144,
+    maxVerificationRuns: 3,
     usedSteps: 0,
-    usedToolCalls: 0
+    usedToolCalls: 0,
+    usedInputTokens: 0,
+    usedOutputTokens: 0,
+    usedCost: 0,
+    usedReadBytes: 0,
+    usedVerificationRuns: 0
   }
 } satisfies RunState;
 if (!validateRunState(runStateSample)) {

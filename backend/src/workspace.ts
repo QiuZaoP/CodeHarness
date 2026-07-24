@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { constants as fsConstants } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { TextDecoder } from 'node:util';
 import { config } from './config.js';
 import { AppError } from './errors.js';
 import type { SourceGitMetadata, SourceMetadata, WorkspaceSnapshot } from './types.js';
@@ -57,6 +58,13 @@ export interface CreatedTaskWorkspace {
 export interface WorkspaceStatus {
   clean: boolean;
   entries: string[];
+}
+
+export interface WorkspaceTextFile {
+  path: string;
+  content: string;
+  bytesRead: number;
+  truncated: boolean;
 }
 
 const defaultOptions: WorkspaceOptions = {
@@ -264,6 +272,47 @@ export class WorkspaceManager {
       .map((line) => line.trimEnd())
       .filter(Boolean);
     return { clean: entries.length === 0, entries };
+  }
+
+  async readOptionalTextFile(
+    workspace: string,
+    requestedPath: string,
+    maxBytes: number,
+    signal: AbortSignal
+  ): Promise<WorkspaceTextFile | undefined> {
+    if (!Number.isInteger(maxBytes) || maxBytes <= 0) {
+      throw new AppError('VALIDATION_ERROR', 'Text file byte limit must be a positive integer');
+    }
+    signal.throwIfAborted();
+    const absolute = await this.resolve(workspace, requestedPath, 'write');
+    const stat = await fs.lstat(absolute).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined;
+      throw error;
+    });
+    if (!stat) return undefined;
+    if (!stat.isFile()) return undefined;
+    const handle = await fs.open(absolute, 'r');
+    try {
+      const buffer = Buffer.alloc(Math.min(stat.size, maxBytes + 1));
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      signal.throwIfAborted();
+      const value = buffer.subarray(0, Math.min(bytesRead, maxBytes));
+      if (value.subarray(0, 8_000).includes(0)) return undefined;
+      let content: string;
+      try {
+        content = new TextDecoder('utf-8', { fatal: true }).decode(value);
+      } catch {
+        return undefined;
+      }
+      return {
+        path: requestedPath.replaceAll('\\', '/'),
+        content,
+        bytesRead,
+        truncated: stat.size > maxBytes
+      };
+    } finally {
+      await handle.close();
+    }
   }
 
   async getDiff(workspace: string): Promise<string> {

@@ -49,13 +49,18 @@ Harness 通过进程内 TypeScript 接口使用模型和代码索引。具体供
 
 ```text
 ProjectOverview
-→ 带来源引用的规划上下文
+→ 规则、摘要、消息与工具结果候选
+→ 去重、哈希、截断和上下文预算
 → ModelGateway.decide
+→ 持久化模型用量
 → 校验 PLAN_UPDATE
 → 持久化计划并进入 EXECUTING
 ```
 
 模型或索引错误不会被误报成普通工具失败。当前实现把任务转为 `WAITING_USER`，记录稳定停止原因和 `task.waiting_user` 事件，释放执行租约；后续阶段将补充用户输入后的恢复入口和更细粒度重试策略。
+
+模型适配器必须返回真实用量；Harness 会把决策和摘要的 Token、成本写入任务运行检查点。
+完整上下文和预算规则见 [CONTEXT_BUDGET.md](CONTEXT_BUDGET.md)。
 
 ## 适配器接入清单
 

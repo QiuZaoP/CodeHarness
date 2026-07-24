@@ -63,6 +63,7 @@ npm run dev
 - 工具注册、安全策略与扩展接口：[docs/TOOLS.md](docs/TOOLS.md)
 - 任务租约、后台执行与恢复：[docs/LIFECYCLE.md](docs/LIFECYCLE.md)
 - 模型网关、代码索引与降级策略：[docs/PORTS.md](docs/PORTS.md)
+- 上下文选择、历史摘要与持久化预算：[docs/CONTEXT_BUDGET.md](docs/CONTEXT_BUDGET.md)
 - JSON Schema：`schemas/domain.schema.json`
 
 公开 API 的规范前缀为 `/api/v1`，当前契约版本为 `1.0.0`。事件携带显式的 `schemaVersion`；修改跨模块对象、枚举或事件时必须同步 OpenAPI、JSON Schema 和契约测试。

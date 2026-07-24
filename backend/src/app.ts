@@ -18,6 +18,8 @@ import { TextCodeIndex } from './adapters/text-code-index.js';
 import { FallbackCodeIndex } from './adapters/fallback-code-index.js';
 import type { ModelGateway } from './ports/model-gateway.js';
 import type { CodeIndex } from './ports/code-index.js';
+import { BudgetManager } from './budget-manager.js';
+import { ContextManager } from './context-manager.js';
 import { WorkspaceManager } from './workspace.js';
 import { domainRef, domainSchema, errorResponses } from './api/contract-schemas.js';
 import type { TaskEvent } from './types.js';
@@ -75,13 +77,31 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
   const codeIndex = dependencies.codeIndex
     ? new FallbackCodeIndex(dependencies.codeIndex, textCodeIndex)
     : textCodeIndex;
+  const budgetManager = new BudgetManager({
+    maxSteps: config.maxTaskSteps,
+    maxToolCalls: config.maxTaskToolCalls,
+    maxDurationMs: config.maxTaskDurationMs,
+    maxChangedFiles: config.maxTaskChangedFiles,
+    maxInputTokens: config.maxModelInputTokens,
+    maxOutputTokens: config.maxModelOutputTokens,
+    maxCost: config.maxModelCost,
+    maxReadBytes: config.maxContextReadBytes,
+    maxVerificationRuns: config.maxVerificationRuns
+  });
+  const contextManager = new ContextManager({
+    maxEntries: config.maxContextEntries,
+    maxTotalBytes: config.maxContextBytes,
+    maxEntryBytes: config.maxContextEntryBytes
+  });
   const harness = new HarnessRunner({
     database,
     broker,
     workspaceManager,
     tools,
     modelGateway,
-    codeIndex
+    codeIndex,
+    budgetManager,
+    contextManager
   });
   const app = Fastify({ logger: { level: config.logLevel } });
   const scheduler = new TaskScheduler(database, harness, {

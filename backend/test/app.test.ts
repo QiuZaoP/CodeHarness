@@ -32,6 +32,7 @@ describe('backend API', () => {
     const source = path.join(directory, 'source');
     await fs.mkdir(source);
     await fs.writeFile(path.join(source, 'README.md'), '# Fixture\n');
+    await fs.writeFile(path.join(source, 'AGENTS.md'), '# Repository rules\nKeep changes small.\n');
     const db = new AppDatabase(path.join(directory, 'test.sqlite'));
     resources.push(db);
     const workspaceManager = new WorkspaceManager({ root: path.join(directory, 'workspaces') });
@@ -75,6 +76,24 @@ describe('backend API', () => {
     expect(db.getEvents(task.id).map((event) => event.type)).toContain('tool.completed');
     expect(db.getEvents(task.id).every((event) => event.schemaVersion === '1.0.0')).toBe(true);
     expect(db.getTask(task.id)?.plan?.steps).toHaveLength(2);
+    expect(db.getTaskRun(task.id)).toMatchObject({
+      taskId: task.id,
+      state: {
+        phase: 'READY_FOR_REVIEW',
+        budget: {
+          usedSteps: 1,
+          usedToolCalls: 3,
+          usedVerificationRuns: 1
+        }
+      }
+    });
+    expect(db.getTaskRun(task.id)?.state.contextRefs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: 'user-goal', contentHash: expect.any(String) }),
+        expect.objectContaining({ source: 'text-code-index', contentHash: expect.any(String) }),
+        expect.objectContaining({ source: 'repository-rule', contentHash: expect.any(String) })
+      ])
+    );
     expect(db.getWorkspaceSnapshots(task.id)).toEqual([
       expect.objectContaining({ taskId: task.id, kind: 'BASELINE' })
     ]);

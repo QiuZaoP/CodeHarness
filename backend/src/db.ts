@@ -9,7 +9,7 @@ import {
   runDatabaseMigrations,
   type AppliedMigration
 } from './database/migrator.js';
-import type { ProjectRecord, SessionRecord } from './database/records.js';
+import type { ProjectRecord, SessionRecord, TaskRunCheckpoint } from './database/records.js';
 import {
   AuditRepository,
   type StoredAuditRecord
@@ -20,6 +20,7 @@ import { SessionRepository } from './database/repositories/session-repository.js
 import { SnapshotRepository } from './database/repositories/snapshot-repository.js';
 import { TaskRepository, type TaskPatch } from './database/repositories/task-repository.js';
 import { TaskLeaseRepository } from './database/repositories/task-lease-repository.js';
+import { TaskRunRepository } from './database/repositories/task-run-repository.js';
 import { TaskStepRepository } from './database/repositories/task-step-repository.js';
 import { ToolCallRepository } from './database/repositories/tool-call-repository.js';
 import { VerificationRepository } from './database/repositories/verification-repository.js';
@@ -35,7 +36,7 @@ import type {
   WorkspaceSnapshot
 } from './types.js';
 
-export type { ProjectRecord, SessionRecord } from './database/records.js';
+export type { ProjectRecord, SessionRecord, TaskRunCheckpoint } from './database/records.js';
 
 export type TaskEventDraft = Omit<NewTaskEvent, 'taskId'>;
 
@@ -66,6 +67,7 @@ export class AppDatabase {
   private readonly audits: AuditRepository;
   private readonly taskSteps: TaskStepRepository;
   private readonly taskLeases: TaskLeaseRepository;
+  private readonly taskRuns: TaskRunRepository;
   private readonly toolCalls: ToolCallRepository;
   private readonly verifications: VerificationRepository;
   private readonly snapshots: SnapshotRepository;
@@ -89,6 +91,7 @@ export class AppDatabase {
     this.audits = new AuditRepository(this.connection);
     this.taskSteps = new TaskStepRepository(this.connection);
     this.taskLeases = new TaskLeaseRepository(this.connection);
+    this.taskRuns = new TaskRunRepository(this.connection);
     this.toolCalls = new ToolCallRepository(this.connection);
     this.verifications = new VerificationRepository(this.connection);
     this.snapshots = new SnapshotRepository(this.connection);
@@ -194,6 +197,28 @@ export class AppDatabase {
 
   getTaskLease(taskId: string): TaskLease | undefined {
     return this.taskLeases.find(taskId);
+  }
+
+  createTaskRun(checkpoint: TaskRunCheckpoint): void {
+    this.writeTransaction(() => {
+      if (!this.tasks.findById(checkpoint.taskId)) {
+        throw new AppError('NOT_FOUND', 'Task not found', { taskId: checkpoint.taskId }, 404);
+      }
+      if (checkpoint.version !== 1) {
+        throw new AppError('VALIDATION_ERROR', 'A new task run must start at version 1', {
+          version: checkpoint.version
+        });
+      }
+      this.taskRuns.create(checkpoint);
+    });
+  }
+
+  getTaskRun(taskId: string): TaskRunCheckpoint | undefined {
+    return this.taskRuns.findByTask(taskId);
+  }
+
+  updateTaskRun(checkpoint: TaskRunCheckpoint, expectedVersion: number): TaskRunCheckpoint {
+    return this.writeTransaction(() => this.taskRuns.update(checkpoint, expectedVersion));
   }
 
   requestTaskControl(

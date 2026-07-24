@@ -182,6 +182,16 @@ export interface RunBudget {
   maxChangedFiles: number;
   usedSteps: number;
   usedToolCalls: number;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+  maxCost?: number;
+  maxReadBytes?: number;
+  maxVerificationRuns?: number;
+  usedInputTokens?: number;
+  usedOutputTokens?: number;
+  usedCost?: number;
+  usedReadBytes?: number;
+  usedVerificationRuns?: number;
 }
 
 export interface RunState {

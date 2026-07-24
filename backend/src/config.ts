@@ -6,6 +6,11 @@ function intEnv(name: string, fallback: number): number {
   return Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
+function numberEnv(name: string, fallback: number): number {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
 export const config = {
   nodeEnv: process.env.NODE_ENV ?? 'development',
   host: process.env.HOST ?? '127.0.0.1',
@@ -22,6 +27,18 @@ export const config = {
   taskLeaseTtlMs: intEnv('TASK_LEASE_TTL_MS', 15_000),
   taskControlPollMs: intEnv('TASK_CONTROL_POLL_MS', 250),
   maxModelTimeoutMs: intEnv('MAX_MODEL_TIMEOUT_MS', 30_000),
+  maxTaskDurationMs: intEnv('MAX_TASK_DURATION_MS', 15 * 60_000),
+  maxTaskToolCalls: intEnv('MAX_TASK_TOOL_CALLS', 80),
+  maxTaskChangedFiles: intEnv('MAX_TASK_CHANGED_FILES', 100),
+  maxModelInputTokens: intEnv('MAX_MODEL_INPUT_TOKENS', 120_000),
+  maxModelOutputTokens: intEnv('MAX_MODEL_OUTPUT_TOKENS', 16_000),
+  maxModelCost: numberEnv('MAX_MODEL_COST', 10),
+  maxContextBytes: intEnv('MAX_CONTEXT_BYTES', 64 * 1024),
+  maxContextEntryBytes: intEnv('MAX_CONTEXT_ENTRY_BYTES', 16 * 1024),
+  maxContextEntries: intEnv('MAX_CONTEXT_ENTRIES', 32),
+  maxContextHistoryMessages: intEnv('MAX_CONTEXT_HISTORY_MESSAGES', 8),
+  maxContextReadBytes: intEnv('MAX_CONTEXT_READ_BYTES', 256 * 1024),
+  maxVerificationRuns: intEnv('MAX_VERIFICATION_RUNS', 3),
   maxImportFiles: intEnv('MAX_IMPORT_FILES', 20_000),
   maxImportBytes: intEnv('MAX_IMPORT_BYTES', 512 * 1024 * 1024),
   maxFileBytes: intEnv('MAX_FILE_BYTES', 5 * 1024 * 1024),

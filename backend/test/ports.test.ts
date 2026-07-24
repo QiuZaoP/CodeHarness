@@ -174,6 +174,23 @@ describe('replaceable runtime ports', () => {
       details: { category: 'INVALID_RESPONSE' }
     });
 
+    const missingUsage = new GuardedModelGateway(
+      modelGateway({
+        decide: async () => ({
+          decision: { type: 'COMPLETE', reason: 'fixture', summary: 'done' },
+          model: 'fixture',
+          provider: 'fixture',
+          usage: {} as never,
+          durationMs: 1
+        })
+      }),
+      1_000
+    );
+    await expect(missingUsage.decide(request, signal)).rejects.toMatchObject({
+      code: 'MODEL_ERROR',
+      details: { category: 'INVALID_RESPONSE' }
+    });
+
     const providerFailure = new GuardedModelGateway(
       modelGateway({
         decide: async () => {

@@ -2,7 +2,7 @@
 
 ## 当前版本
 
-- 数据库 schema version：`4`
+- 数据库 schema version：`5`
 - 迁移记录：`schema_migrations`
 - SQLite `PRAGMA user_version` 与最新迁移版本保持一致
 - 启动设置：`foreign_keys = ON`、WAL、`busy_timeout = 5000`
@@ -15,6 +15,7 @@
 2. `runtime-persistence-and-optimistic-locking`
 3. `project-source-metadata`
 4. `resumable-task-lifecycle`
+5. `task-run-checkpoints-and-budgets`
 
 没有 `schema_migrations` 的阶段 1 数据库会先登记兼容的初始迁移，再增加版本列和运行记录表；项目、会话、任务及历史事件会保留。
 
@@ -34,6 +35,7 @@
 | `verification_results` | 验证命令与归因结果               |
 | `audit_records`        | 资源变更前后摘要                 |
 | `task_leases`          | 单 Runner 抢占、续租和过期恢复   |
+| `task_run_checkpoints` | RunState、上下文、摘要和累计预算 |
 | `schema_migrations`    | 已应用迁移、名称和 checksum      |
 
 数据库访问通过 `backend/src/database/repositories/` 封装。API 和 Harness 不直接拼装 SQL。
@@ -49,6 +51,7 @@
 - 验证结果 + `verification.completed`。
 - 控制请求 + `task.control_requested` 审计。
 - 状态恢复 + 状态事件 + 审计。
+- 运行检查点创建或乐观版本更新。
 
 事务提交后才向内存 SSE Broker 发布事件。模型、命令、文件和网络操作不能放入 SQLite 事务。
 
@@ -66,3 +69,5 @@
 - 工作区已经按任务隔离，快照元数据持久化；文件布局、校验和回滚规则见
   [WORKSPACES.md](WORKSPACES.md)。
 - `file_changes` 的审批/应用和完整验证编排将在后续阶段接入。
+- `task_run_checkpoints` 保存服务重启后仍需继续累计的上下文引用、模型用量、工具次数、
+  读取字节、变更文件和验证次数；具体规则见 [CONTEXT_BUDGET.md](CONTEXT_BUDGET.md)。

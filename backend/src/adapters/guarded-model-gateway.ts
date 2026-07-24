@@ -30,7 +30,7 @@ export class GuardedModelGateway implements ModelGateway {
       (response) => {
         assertDomainContract('modelDecision', response.decision);
         this.assertIdentity(response.model, response.provider);
-        this.assertUsage(response.usage);
+        this.assertUsage(response.usage, true);
         if (!Number.isFinite(response.durationMs) || response.durationMs < 0) {
           throw new Error('Model duration must be a non-negative finite number');
         }
@@ -49,7 +49,7 @@ export class GuardedModelGateway implements ModelGateway {
       (controlledSignal) => this.inner.summarize(request, controlledSignal, onStreamEvent),
       (response) => {
         if (!response.summary.trim()) throw new Error('Model summary must not be empty');
-        this.assertUsage(response.usage);
+        this.assertUsage(response.usage, true);
       }
     );
   }
@@ -61,7 +61,7 @@ export class GuardedModelGateway implements ModelGateway {
       (controlledSignal) => this.inner.embed(request, controlledSignal),
       (response) => {
         this.assertIdentity(response.model, response.provider);
-        this.assertUsage(response.usage);
+        this.assertUsage(response.usage, false);
         if (
           response.vectors.length !== request.inputs.length ||
           response.vectors.some(
@@ -151,7 +151,13 @@ export class GuardedModelGateway implements ModelGateway {
     }
   }
 
-  private assertUsage(usage: Partial<ModelUsage>): void {
+  private assertUsage(usage: Partial<ModelUsage>, requireOutput: boolean): void {
+    if (!Number.isFinite(usage.inputTokens) || usage.inputTokens! < 0) {
+      throw new Error('Model usage inputTokens must be a non-negative finite number');
+    }
+    if (requireOutput && (!Number.isFinite(usage.outputTokens) || usage.outputTokens! < 0)) {
+      throw new Error('Model usage outputTokens must be a non-negative finite number');
+    }
     for (const [name, value] of Object.entries(usage)) {
       if (value !== undefined && (!Number.isFinite(value) || value < 0)) {
         throw new Error(`Model usage ${name} must be a non-negative finite number`);

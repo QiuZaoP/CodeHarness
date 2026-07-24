@@ -4,6 +4,8 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { EventBroker } from '../src/broker.js';
+import { BudgetManager } from '../src/budget-manager.js';
+import { ContextManager } from '../src/context-manager.js';
 import { FakeCodeIndex } from '../src/adapters/fake-code-index.js';
 import { FakeModelGateway } from '../src/adapters/fake-model-gateway.js';
 import { AppDatabase, type TaskEventDraft } from '../src/db.js';
@@ -24,9 +26,10 @@ class BlockingTools implements ToolRegistrationPort {
   readonly calls: ToolCall[] = [];
   readonly firstCallStarted: Promise<void>;
   private resolveFirstCall!: () => void;
-  private blockNextList = true;
+  private blockNextList: boolean;
 
-  constructor() {
+  constructor(blockNextList = true) {
+    this.blockNextList = blockNextList;
     this.firstCallStarted = new Promise((resolve) => {
       this.resolveFirstCall = resolve;
     });
@@ -91,7 +94,48 @@ interface Fixture {
   tools: BlockingTools;
 }
 
-async function fixture(modelGateway: ModelGateway = new FakeModelGateway()): Promise<Fixture> {
+interface FixtureOptions {
+  modelGateway?: ModelGateway;
+  budgetManager?: BudgetManager;
+  blockFirstList?: boolean;
+}
+
+function defaultBudgetManager(): BudgetManager {
+  return new BudgetManager({
+    maxSteps: 20,
+    maxToolCalls: 80,
+    maxDurationMs: 60_000,
+    maxChangedFiles: 100,
+    maxInputTokens: 120_000,
+    maxOutputTokens: 16_000,
+    maxCost: 10,
+    maxReadBytes: 256 * 1024,
+    maxVerificationRuns: 3
+  });
+}
+
+function meteredModelGateway(): ModelGateway {
+  const fake = new FakeModelGateway();
+  return {
+    decide: async (request, signal, onStreamEvent) => {
+      const response = await fake.decide(request, signal, onStreamEvent);
+      return {
+        ...response,
+        usage: { inputTokens: 7, outputTokens: 3, cost: 0.25 }
+      };
+    },
+    summarize: async (request, signal, onStreamEvent) => {
+      const response = await fake.summarize(request, signal, onStreamEvent);
+      return {
+        ...response,
+        usage: { inputTokens: 2, outputTokens: 1, cost: 0.05 }
+      };
+    },
+    embed: fake.embed.bind(fake)
+  };
+}
+
+async function fixture(options: FixtureOptions = {}): Promise<Fixture> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codeharness-lifecycle-'));
   const source = path.join(root, 'source');
   await fs.mkdir(source);
@@ -115,13 +159,13 @@ async function fixture(modelGateway: ModelGateway = new FakeModelGateway()): Pro
     title: 'Fixture',
     createdAt: new Date().toISOString()
   });
-  const tools = new BlockingTools();
+  const tools = new BlockingTools(options.blockFirstList ?? true);
   const harness = new HarnessRunner({
     database,
     broker: new EventBroker(),
     workspaceManager,
     tools,
-    modelGateway,
+    modelGateway: options.modelGateway ?? new FakeModelGateway(),
     codeIndex: new FakeCodeIndex({
       overview: {
         projectId,
@@ -132,6 +176,12 @@ async function fixture(modelGateway: ModelGateway = new FakeModelGateway()): Pro
         indexedFiles: 1,
         degraded: true
       }
+    }),
+    budgetManager: options.budgetManager ?? defaultBudgetManager(),
+    contextManager: new ContextManager({
+      maxEntries: 32,
+      maxTotalBytes: 64 * 1024,
+      maxEntryBytes: 16 * 1024
     })
   });
   const scheduler = new TaskScheduler(database, harness, {
@@ -272,7 +322,9 @@ describe('task lifecycle scheduler', () => {
   });
 
   it('degrades a model planning failure into an inspectable waiting state', async () => {
-    const { database, scheduler, task, tools } = await fixture(new FakeModelGateway([]));
+    const { database, scheduler, task, tools } = await fixture({
+      modelGateway: new FakeModelGateway([])
+    });
 
     scheduler.start(task.id);
     await scheduler.waitForIdle(task.id);
@@ -288,5 +340,89 @@ describe('task lifecycle scheduler', () => {
     });
     expect(database.getTaskLease(task.id)).toBeUndefined();
     expect(tools.calls).toEqual([]);
+  });
+
+  it('summarizes older history in persisted batches and reloads bounded context', async () => {
+    const { database, scheduler, task } = await fixture({
+      blockFirstList: false,
+      modelGateway: meteredModelGateway()
+    });
+    for (let index = 0; index < 14; index += 1) {
+      database.createMessage({
+        id: randomUUID(),
+        sessionId: task.sessionId,
+        role: index % 2 === 0 ? 'USER' : 'ASSISTANT',
+        content: `Unique session message ${index}`,
+        createdAt: new Date(Date.now() + index).toISOString()
+      });
+    }
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    const checkpoint = database.getTaskRun(task.id);
+    expect(checkpoint).toMatchObject({
+      summarizedMessageCount: 6,
+      state: {
+        phase: 'READY_FOR_REVIEW',
+        budget: {
+          usedSteps: 1,
+          usedToolCalls: 3,
+          usedInputTokens: 13,
+          usedOutputTokens: 6,
+          usedCost: 0.4,
+          usedVerificationRuns: 1
+        }
+      }
+    });
+    expect(checkpoint?.historySummary).toContain(task.goal);
+    expect(checkpoint?.state.contextRefs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: 'model-summary', contentHash: expect.any(String) }),
+        expect.objectContaining({
+          source: 'session-message:assistant',
+          contentHash: expect.any(String)
+        })
+      ])
+    );
+  });
+
+  it('pauses before exceeding a persisted tool-call budget', async () => {
+    const budgetManager = new BudgetManager({
+      maxSteps: 20,
+      maxToolCalls: 1,
+      maxDurationMs: 60_000,
+      maxChangedFiles: 100,
+      maxInputTokens: 120_000,
+      maxOutputTokens: 16_000,
+      maxCost: 10,
+      maxReadBytes: 256 * 1024,
+      maxVerificationRuns: 3
+    });
+    const { database, scheduler, task, tools } = await fixture({
+      budgetManager,
+      blockFirstList: false
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)).toMatchObject({
+      status: 'PAUSED',
+      resumeStatus: 'EXECUTING',
+      stopReason: 'Task budget exceeded: MAX_TOOL_CALLS'
+    });
+    expect(database.getTaskRun(task.id)).toMatchObject({
+      state: {
+        phase: 'PAUSED',
+        budget: { usedToolCalls: 1, maxToolCalls: 1 }
+      }
+    });
+    expect(tools.calls).toHaveLength(1);
+    expect(database.getEvents(task.id).at(-1)).toMatchObject({
+      type: 'task.paused',
+      payload: { status: 'PAUSED' }
+    });
+    expect(database.getTaskLease(task.id)).toBeUndefined();
   });
 });

@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import type { EventBroker } from './broker.js';
+import type { BudgetManager } from './budget-manager.js';
 import type { CommandOutput } from './command-runner.js';
 import { config } from './config.js';
-import type { AppDatabase, TaskEventDraft } from './db.js';
+import type { ContextCandidate, ContextManager, SelectedContext } from './context-manager.js';
+import type { AppDatabase, TaskEventDraft, TaskRunCheckpoint } from './db.js';
 import { AppError } from './errors.js';
 import type { ToolRegistrationPort } from './ports/tool-registry.js';
 import type { ModelGateway } from './ports/model-gateway.js';
@@ -11,6 +13,7 @@ import { taskStateMachine } from './state-machine.js';
 import { contractSchemaVersion } from './types.js';
 import type {
   StoredTask,
+  RunState,
   TaskPlan,
   TaskStatus,
   ToolCall,
@@ -26,6 +29,8 @@ export interface HarnessDependencies {
   tools: ToolRegistrationPort;
   modelGateway: ModelGateway;
   codeIndex: CodeIndex;
+  budgetManager: BudgetManager;
+  contextManager: ContextManager;
 }
 
 interface LifecyclePatch {
@@ -153,6 +158,22 @@ export class HarnessRunner {
             controlRequest: null
           },
           [{ type: 'task.waiting_user', payload: { message: error.message } }]
+        );
+      }
+      if (
+        error instanceof AppError &&
+        error.code === 'BUDGET_EXCEEDED' &&
+        taskStateMachine.canTransition(current.status, 'PAUSED')
+      ) {
+        return this.transition(
+          current,
+          'PAUSED',
+          {
+            stopReason: error.message,
+            resumeStatus: taskStateMachine.pauseResumeTarget(current.status),
+            controlRequest: null
+          },
+          [{ type: 'task.paused', payload: { status: 'PAUSED' } }]
         );
       }
       if (
@@ -287,12 +308,27 @@ export class HarnessRunner {
       }
     });
     this.publishEvents(result.events);
+    this.synchronizeStoredRun(result.task);
     return result.task;
   }
 
   private async callTool<T>(task: StoredTask, tool: ToolCall, signal?: AbortSignal): Promise<T> {
     const permissions = ['READ', 'WRITE', 'COMMAND'] as const;
     this.dependencies.tools.validate(tool, permissions);
+    const definition = this.dependencies.tools
+      .definitions()
+      .find((candidate) => candidate.name === tool.name);
+    let checkpoint = this.ensureRunCheckpoint(task);
+    this.dependencies.budgetManager.assertDuration(checkpoint.startedAt, checkpoint.state.budget);
+    if (definition?.permission === 'READ') {
+      this.dependencies.budgetManager.assertCanRead(checkpoint.state);
+    }
+    checkpoint = this.saveRunCheckpoint(
+      checkpoint,
+      this.dependencies.budgetManager.reserveToolCall(
+        this.synchronizeRunState(checkpoint.state, task)
+      )
+    );
     const id = randomUUID();
     const startedAt = new Date().toISOString();
     const startedEvent = this.dependencies.database.startToolCall(
@@ -331,6 +367,17 @@ export class HarnessRunner {
       }
     );
     this.dependencies.broker.publish(completedEvent);
+    let state = this.synchronizeRunState(checkpoint.state, this.requireTask(task.id));
+    if (definition?.permission === 'READ' && result.output !== undefined) {
+      state = this.dependencies.budgetManager.recordReadBytes(
+        state,
+        Buffer.byteLength(JSON.stringify(result.output))
+      );
+    }
+    state = this.dependencies.budgetManager.recordChangedFiles(state, result.affectedFiles);
+    checkpoint = this.saveRunCheckpoint(checkpoint, state);
+    this.dependencies.budgetManager.assertWithin(checkpoint.state);
+    this.dependencies.budgetManager.assertDuration(checkpoint.startedAt, checkpoint.state.budget);
     if (result.status !== 'SUCCEEDED') {
       throw new AppError(
         result.error?.code ?? 'WORKSPACE_ERROR',
@@ -343,6 +390,14 @@ export class HarnessRunner {
   }
 
   private async verify(task: StoredTask, signal?: AbortSignal): Promise<StoredTask> {
+    let checkpoint = this.ensureRunCheckpoint(task);
+    this.dependencies.budgetManager.assertDuration(checkpoint.startedAt, checkpoint.state.budget);
+    checkpoint = this.saveRunCheckpoint(
+      checkpoint,
+      this.dependencies.budgetManager.reserveVerification(
+        this.synchronizeRunState(checkpoint.state, task)
+      )
+    );
     const verification = await this.callTool<CommandOutput>(
       task,
       {
@@ -381,15 +436,39 @@ export class HarnessRunner {
 
   private async plan(task: StoredTask, signal?: AbortSignal): Promise<TaskPlan> {
     const controlledSignal = signal ?? new AbortController().signal;
+    let checkpoint = this.ensureRunCheckpoint(task);
+    this.dependencies.budgetManager.assertDuration(checkpoint.startedAt, checkpoint.state.budget);
+    checkpoint = await this.summarizeHistory(task, checkpoint, controlledSignal);
     const overview = await this.dependencies.codeIndex.getProjectOverview(
       task.projectId,
       controlledSignal
     );
     this.throwIfStopped(task.id, signal);
+    const candidates = await this.contextCandidates(task, overview, checkpoint, controlledSignal);
+    const selection = this.dependencies.contextManager.select(candidates);
+    let state = this.synchronizeRunState(checkpoint.state, task);
+    state = {
+      ...state,
+      contextRefs: selection.entries.map(({ reference }) => reference)
+    };
+    state = this.dependencies.budgetManager.recordReadBytes(state, selection.totalBytes);
+    checkpoint = this.saveRunCheckpoint(checkpoint, state);
+    this.dependencies.budgetManager.assertWithin(checkpoint.state);
+    this.dependencies.budgetManager.assertDuration(checkpoint.startedAt, checkpoint.state.budget);
+    checkpoint = this.saveRunCheckpoint(
+      checkpoint,
+      this.dependencies.budgetManager.reserveStep(checkpoint.state)
+    );
     const response = await this.dependencies.modelGateway.decide(
-      this.planningRequest(task, overview),
+      this.planningRequest(checkpoint.state, selection.entries),
       controlledSignal
     );
+    checkpoint = this.saveRunCheckpoint(
+      checkpoint,
+      this.dependencies.budgetManager.recordModelUsage(checkpoint.state, response.usage)
+    );
+    this.dependencies.budgetManager.assertWithin(checkpoint.state);
+    this.dependencies.budgetManager.assertDuration(checkpoint.startedAt, checkpoint.state.budget);
     this.throwIfStopped(task.id, signal);
     if (response.decision.type !== 'PLAN_UPDATE') {
       throw new AppError(
@@ -402,43 +481,235 @@ export class HarnessRunner {
     return response.decision.plan;
   }
 
-  private planningRequest(task: StoredTask, overview: ProjectOverview) {
-    const goalReference = {
-      ref: `task:${task.id}:goal`,
-      kind: 'SUMMARY' as const,
-      source: 'user-goal'
-    };
-    const overviewReference = {
-      ref: `project:${task.projectId}:overview`,
-      kind: 'PROJECT_OVERVIEW' as const,
-      source: overview.degraded ? 'text-code-index' : 'code-index'
-    };
+  private planningRequest(state: RunState, context: readonly SelectedContext[]) {
     return {
-      runState: {
+      runState: state,
+      context,
+      availableTools: this.dependencies.tools.definitions()
+    };
+  }
+
+  private ensureRunCheckpoint(task: StoredTask): TaskRunCheckpoint {
+    const existing = this.dependencies.database.getTaskRun(task.id);
+    if (existing) return existing;
+    const timestamp = new Date().toISOString();
+    const runId = randomUUID();
+    const baseline = this.dependencies.database
+      .getWorkspaceSnapshots(task.id)
+      .find((snapshot) => snapshot.kind === 'BASELINE');
+    const checkpoint: TaskRunCheckpoint = {
+      taskId: task.id,
+      runId,
+      state: {
         schemaVersion: contractSchemaVersion,
-        runId: randomUUID(),
+        runId,
         taskId: task.id,
         sessionId: task.sessionId,
         phase: task.status,
-        contextRefs: [goalReference, overviewReference],
+        plan: task.plan,
+        contextRefs: [],
         toolCallIds: [],
+        workspaceSnapshotId: baseline?.id,
         changedFiles: [],
         verificationResultIds: [],
-        budget: {
-          maxSteps: config.maxTaskSteps,
-          maxToolCalls: config.maxTaskSteps * 4,
-          maxDurationMs: config.maxModelTimeoutMs,
-          maxChangedFiles: 100,
-          usedSteps: 0,
-          usedToolCalls: 0
-        }
+        budget: this.dependencies.budgetManager.create()
       },
-      context: [
-        { reference: goalReference, content: task.goal },
-        { reference: overviewReference, content: JSON.stringify(overview) }
-      ],
-      availableTools: this.dependencies.tools.definitions()
+      summarizedMessageCount: 0,
+      startedAt: timestamp,
+      updatedAt: timestamp,
+      version: 1
     };
+    this.dependencies.database.createTaskRun(checkpoint);
+    return checkpoint;
+  }
+
+  private saveRunCheckpoint(
+    checkpoint: TaskRunCheckpoint,
+    state: RunState,
+    patch: Partial<Pick<TaskRunCheckpoint, 'historySummary' | 'summarizedMessageCount'>> = {}
+  ): TaskRunCheckpoint {
+    return this.dependencies.database.updateTaskRun(
+      {
+        ...checkpoint,
+        ...patch,
+        state,
+        updatedAt: new Date().toISOString()
+      },
+      checkpoint.version
+    );
+  }
+
+  private synchronizeRunState(state: RunState, task: StoredTask): RunState {
+    const toolCalls = this.dependencies.database.getToolCalls(task.id);
+    const snapshots = this.dependencies.database.getWorkspaceSnapshots(task.id);
+    const verifications = this.dependencies.database.getVerificationResults(task.id);
+    return {
+      ...state,
+      phase: task.status,
+      plan: task.plan,
+      toolCallIds: toolCalls.map(({ id }) => id),
+      workspaceSnapshotId: snapshots.at(-1)?.id,
+      verificationResultIds: verifications.map(({ id }) => id),
+      stopReason: task.stopReason
+    };
+  }
+
+  private synchronizeStoredRun(task: StoredTask): void {
+    const checkpoint = this.dependencies.database.getTaskRun(task.id);
+    if (!checkpoint) return;
+    this.saveRunCheckpoint(checkpoint, this.synchronizeRunState(checkpoint.state, task));
+  }
+
+  private async summarizeHistory(
+    task: StoredTask,
+    checkpoint: TaskRunCheckpoint,
+    signal: AbortSignal
+  ): Promise<TaskRunCheckpoint> {
+    const messages = this.dependencies.database.getMessages(task.sessionId);
+    const olderCount = Math.max(0, messages.length - config.maxContextHistoryMessages);
+    while (checkpoint.summarizedMessageCount < olderCount) {
+      const batchEnd = Math.min(olderCount, checkpoint.summarizedMessageCount + 2);
+      const candidates: ContextCandidate[] = messages
+        .slice(checkpoint.summarizedMessageCount, batchEnd)
+        .map(({ id, role, content }) => ({
+          reference: {
+            ref: `message:${id}:summary-input`,
+            kind: 'SUMMARY' as const,
+            source: 'session-history'
+          },
+          content: `${role}: ${content}`,
+          priority: 1
+        }));
+      if (checkpoint.historySummary) {
+        candidates.unshift({
+          reference: {
+            ref: `session:${task.sessionId}:previous-summary`,
+            kind: 'SUMMARY',
+            source: 'model-summary'
+          },
+          content: checkpoint.historySummary,
+          priority: 2
+        });
+      }
+      const bounded = this.dependencies.contextManager.select(candidates);
+      let state = this.dependencies.budgetManager.recordReadBytes(
+        this.synchronizeRunState(checkpoint.state, task),
+        bounded.totalBytes
+      );
+      checkpoint = this.saveRunCheckpoint(checkpoint, state);
+      this.dependencies.budgetManager.assertWithin(checkpoint.state);
+      this.dependencies.budgetManager.assertDuration(checkpoint.startedAt, checkpoint.state.budget);
+      this.dependencies.budgetManager.assertCanCallModel(checkpoint.state);
+      const response = await this.dependencies.modelGateway.summarize(
+        {
+          goal: task.goal,
+          observations: bounded.entries.map(({ content }) => content),
+          changedFiles: checkpoint.state.changedFiles
+        },
+        signal
+      );
+      state = this.dependencies.budgetManager.recordModelUsage(checkpoint.state, response.usage);
+      checkpoint = this.saveRunCheckpoint(checkpoint, state, {
+        historySummary: response.summary,
+        summarizedMessageCount: batchEnd
+      });
+      this.dependencies.budgetManager.assertWithin(checkpoint.state);
+      this.dependencies.budgetManager.assertDuration(checkpoint.startedAt, checkpoint.state.budget);
+    }
+    return checkpoint;
+  }
+
+  private async contextCandidates(
+    task: StoredTask,
+    overview: ProjectOverview,
+    checkpoint: TaskRunCheckpoint,
+    signal: AbortSignal
+  ): Promise<ContextCandidate[]> {
+    const candidates: ContextCandidate[] = [
+      {
+        reference: {
+          ref: `task:${task.id}:goal`,
+          kind: 'SUMMARY',
+          source: 'user-goal'
+        },
+        content: task.goal,
+        priority: 100
+      },
+      {
+        reference: {
+          ref: `project:${task.projectId}:overview`,
+          kind: 'PROJECT_OVERVIEW',
+          source: overview.degraded ? 'text-code-index' : 'code-index'
+        },
+        content: JSON.stringify(overview),
+        priority: 90
+      }
+    ];
+    for (const rulePath of [
+      'AGENTS.md',
+      'CLAUDE.md',
+      '.github/copilot-instructions.md',
+      'CONTRIBUTING.md'
+    ]) {
+      const rule = await this.dependencies.workspaceManager.readOptionalTextFile(
+        task.workspacePath,
+        rulePath,
+        config.maxContextEntryBytes,
+        signal
+      );
+      if (!rule) continue;
+      candidates.push({
+        reference: {
+          ref: `task:${task.id}:rule:${rule.path}`,
+          kind: 'FILE',
+          source: 'repository-rule',
+          startLine: 1
+        },
+        content: rule.truncated ? `${rule.content}\n...[truncated at source]` : rule.content,
+        priority: 80
+      });
+    }
+    if (checkpoint.historySummary) {
+      candidates.push({
+        reference: {
+          ref: `session:${task.sessionId}:history-summary`,
+          kind: 'SUMMARY',
+          source: 'model-summary'
+        },
+        content: checkpoint.historySummary,
+        priority: 70
+      });
+    }
+    const messages = this.dependencies.database
+      .getMessages(task.sessionId)
+      .slice(-config.maxContextHistoryMessages);
+    messages.forEach((message, index) => {
+      candidates.push({
+        reference: {
+          ref: `message:${message.id}`,
+          kind: 'SUMMARY',
+          source: `session-message:${message.role.toLowerCase()}`
+        },
+        content: message.content,
+        priority: 60 + index
+      });
+    });
+    this.dependencies.database
+      .getToolCalls(task.id)
+      .filter(({ result }) => result !== undefined)
+      .slice(-8)
+      .forEach((call, index) => {
+        candidates.push({
+          reference: {
+            ref: `tool-call:${call.id}:result`,
+            kind: 'TOOL_RESULT',
+            source: call.tool.name
+          },
+          content: JSON.stringify(call.result),
+          priority: 40 + index
+        });
+      });
+    return candidates;
   }
 
   private requireTask(taskId: string): StoredTask {

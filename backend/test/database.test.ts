@@ -5,7 +5,12 @@ import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { AppDatabase, type TaskEventDraft } from '../src/db.js';
-import type { StoredTask, TaskPlan } from '../src/types.js';
+import {
+  contractSchemaVersion,
+  type RunState,
+  type StoredTask,
+  type TaskPlan
+} from '../src/types.js';
 
 const timestamp = '2026-07-24T00:00:00.000Z';
 
@@ -63,8 +68,10 @@ describe('database migrations and repositories', () => {
     const file = await databasePath('codeharness-schema-');
     const database = new AppDatabase(file);
     try {
-      expect(database.getSchemaVersion()).toBe(4);
-      expect(database.getAppliedMigrations().map(({ version }) => version)).toEqual([1, 2, 3, 4]);
+      expect(database.getSchemaVersion()).toBe(5);
+      expect(database.getAppliedMigrations().map(({ version }) => version)).toEqual([
+        1, 2, 3, 4, 5
+      ]);
       expect(database.connection.pragma('foreign_keys', { simple: true })).toBe(1);
       const tables = database.connection
         .prepare(
@@ -81,6 +88,7 @@ describe('database migrations and repositories', () => {
         'sessions',
         'task_events',
         'task_leases',
+        'task_run_checkpoints',
         'task_steps',
         'tasks',
         'tool_calls',
@@ -172,7 +180,7 @@ describe('database migrations and repositories', () => {
 
     const upgraded = new AppDatabase(file);
     try {
-      expect(upgraded.getSchemaVersion()).toBe(4);
+      expect(upgraded.getSchemaVersion()).toBe(5);
       expect(upgraded.getTask(taskId)).toMatchObject({
         id: taskId,
         goal: 'Keep this task',
@@ -350,6 +358,72 @@ describe('database migrations and repositories', () => {
         expect.objectContaining({ id: toolCallId, status: 'RUNNING', result: undefined })
       ]);
       expect(database.getEvents(task.id)).toHaveLength(eventCount);
+    } finally {
+      database.close();
+    }
+  });
+
+  it('persists versioned run checkpoints and diagnoses corrupted run state', async () => {
+    const file = await databasePath('codeharness-run-state-');
+    let database = new AppDatabase(file);
+    const task = seedTask(database);
+    const runId = randomUUID();
+    const state: RunState = {
+      schemaVersion: contractSchemaVersion,
+      runId,
+      taskId: task.id,
+      sessionId: task.sessionId,
+      phase: task.status,
+      contextRefs: [],
+      toolCallIds: [],
+      changedFiles: [],
+      verificationResultIds: [],
+      budget: {
+        maxSteps: 20,
+        maxToolCalls: 80,
+        maxDurationMs: 60_000,
+        maxChangedFiles: 100,
+        usedSteps: 0,
+        usedToolCalls: 0
+      }
+    };
+    database.createTaskRun({
+      taskId: task.id,
+      runId,
+      state,
+      historySummary: 'Existing history',
+      summarizedMessageCount: 2,
+      startedAt: timestamp,
+      updatedAt: timestamp,
+      version: 1
+    });
+    const checkpoint = database.getTaskRun(task.id)!;
+    database.updateTaskRun(
+      {
+        ...checkpoint,
+        state: {
+          ...checkpoint.state,
+          budget: { ...checkpoint.state.budget, usedSteps: 1 }
+        },
+        updatedAt: new Date(Date.parse(timestamp) + 1_000).toISOString()
+      },
+      checkpoint.version
+    );
+    database.close();
+
+    database = new AppDatabase(file);
+    try {
+      expect(database.getTaskRun(task.id)).toMatchObject({
+        runId,
+        historySummary: 'Existing history',
+        summarizedMessageCount: 2,
+        version: 2,
+        state: { budget: { usedSteps: 1 } }
+      });
+      database.connection
+        .prepare("UPDATE task_run_checkpoints SET state_json = '{not-json' WHERE task_id = ?")
+        .run(task.id);
+      expect(() => database.getTaskRun(task.id)).toThrow('Stored JSON is invalid');
     } finally {
       database.close();
     }

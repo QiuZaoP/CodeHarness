@@ -404,7 +404,17 @@
         "maxDurationMs": { "type": "integer", "minimum": 1 },
         "maxChangedFiles": { "type": "integer", "minimum": 0 },
         "usedSteps": { "type": "integer", "minimum": 0 },
-        "usedToolCalls": { "type": "integer", "minimum": 0 }
+        "usedToolCalls": { "type": "integer", "minimum": 0 },
+        "maxInputTokens": { "type": "integer", "minimum": 1 },
+        "maxOutputTokens": { "type": "integer", "minimum": 1 },
+        "maxCost": { "type": "number", "exclusiveMinimum": 0 },
+        "maxReadBytes": { "type": "integer", "minimum": 1 },
+        "maxVerificationRuns": { "type": "integer", "minimum": 1 },
+        "usedInputTokens": { "type": "integer", "minimum": 0 },
+        "usedOutputTokens": { "type": "integer", "minimum": 0 },
+        "usedCost": { "type": "number", "minimum": 0 },
+        "usedReadBytes": { "type": "integer", "minimum": 0 },
+        "usedVerificationRuns": { "type": "integer", "minimum": 0 }
       },
       "additionalProperties": false
     },

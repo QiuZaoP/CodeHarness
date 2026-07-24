@@ -136,12 +136,16 @@ data: {"schemaVersion":"1.0.0","id":43,"taskId":"...","type":"tool.completed","t
 - 规划阶段先读取项目概览，再请求结构化 `PLAN_UPDATE`；模型或索引错误会使任务进入
   `WAITING_USER` 并释放执行租约。
 - 注入主代码索引后，主索引异常会降级到有界文件扫描与文本搜索；结构化查询不会伪造结果。
+- 每个模型请求携带持久化 `RunState`。新增预算字段保持 `1.0.0` 向后兼容：旧适配器可以
+  忽略，新 Harness 会始终发送完整的 Token、成本、读取字节和验证预算。
 
 内置工具、命令允许策略、角色三注册入口和资源配额见
 [TOOLS.md](TOOLS.md)。工具开始事件只公开脱敏后的参数摘要；文件内容和补丁正文不进入
 SSE payload。
 
 模型和索引适配器的错误分类、降级能力与接入清单见 [PORTS.md](PORTS.md)。
+上下文来源、摘要游标、运行检查点和 `BUDGET_EXCEEDED` 语义见
+[CONTEXT_BUDGET.md](CONTEXT_BUDGET.md)。
 
 ## 错误码
 
