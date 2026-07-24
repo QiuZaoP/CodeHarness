@@ -133,7 +133,10 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
           `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify({ taskId: event.taskId, timestamp: event.timestamp, ...event.payload })}\n\n`
         );
       };
-      database.getEvents(task.id, Number(request.query.after ?? 0)).forEach(write);
+      const lastEventId = request.headers['last-event-id'];
+      const after =
+        request.query.after ?? (Array.isArray(lastEventId) ? lastEventId[0] : lastEventId);
+      database.getEvents(task.id, Number(after ?? 0)).forEach(write);
       const unsubscribe = broker.subscribe(task.id, write);
       const heartbeat = setInterval(() => reply.raw.write(': keep-alive\n\n'), 15_000);
       request.raw.on('close', () => {

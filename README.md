@@ -57,6 +57,8 @@ npm run dev
 
 - 健康检查：`http://127.0.0.1:3000/api/health`
 - OpenAPI：`http://127.0.0.1:3000/api/v1/openapi.json`
+- API 与 SSE 契约：[docs/API_CONTRACT.md](docs/API_CONTRACT.md)
+- JSON Schema：`schemas/domain.schema.json`
 
 在没有真实模型和解析器之前，后端使用 Mock Harness、文本检索和临时项目工作区跑通任务闭环。完整检查命令：
 
