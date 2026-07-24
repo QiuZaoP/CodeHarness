@@ -73,6 +73,14 @@ describe('public contract schemas', () => {
           changeId: 'e2a69a67-71bc-4b46-8291-57b01c6c783b',
           decision: 'ACCEPTED'
         }
+      },
+      {
+        type: 'harness.decision',
+        payload: {
+          sequence: 1,
+          decisionType: 'TOOL_CALL',
+          reason: 'Inspect the project'
+        }
       }
     ];
 

@@ -446,7 +446,52 @@
         "changedFiles": { "type": "array", "items": { "type": "string" } },
         "verificationResultIds": { "type": "array", "items": { "$ref": "#/$defs/id" } },
         "budget": { "$ref": "#/$defs/runBudget" },
+        "turnCount": { "type": "integer", "minimum": 0 },
+        "consecutiveFailures": { "type": "integer", "minimum": 0 },
+        "lastVerificationPassed": { "type": "boolean" },
+        "activeTurn": { "$ref": "#/$defs/harnessTurn" },
         "stopReason": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "harnessObservation": {
+      "type": "object",
+      "required": ["status", "summary"],
+      "properties": {
+        "status": { "type": "string", "enum": ["SUCCEEDED", "FAILED"] },
+        "summary": { "type": "string" },
+        "toolCallId": { "$ref": "#/$defs/id" },
+        "verificationResultIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "error": {
+          "type": "object",
+          "required": ["code", "message", "retryable"],
+          "properties": {
+            "code": { "$ref": "#/$defs/errorCode" },
+            "message": { "type": "string" },
+            "retryable": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "harnessTurn": {
+      "type": "object",
+      "required": ["sequence", "decision", "status", "startedAt", "updatedAt"],
+      "properties": {
+        "sequence": { "type": "integer", "minimum": 1 },
+        "decision": { "$ref": "#/$defs/modelDecision" },
+        "status": { "type": "string", "enum": ["DECIDED", "OBSERVED"] },
+        "startedAt": { "$ref": "#/$defs/timestamp" },
+        "updatedAt": { "$ref": "#/$defs/timestamp" },
+        "toolCallIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "observation": { "$ref": "#/$defs/harnessObservation" }
       },
       "additionalProperties": false
     },

@@ -28,7 +28,8 @@
         "task.cancelled",
         "task.applied",
         "verification.completed",
-        "change.updated"
+        "change.updated",
+        "harness.decision"
       ]
     },
     "timestamp": {
@@ -89,6 +90,10 @@
     {
       "if": { "properties": { "type": { "const": "change.updated" } } },
       "then": { "properties": { "payload": { "$ref": "#/$defs/changePayload" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "harness.decision" } } },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/harnessDecisionPayload" } } }
     }
   ],
   "$defs": {
@@ -226,6 +231,18 @@
         "decision": {
           "$ref": "https://codeharness.local/schemas/domain.schema.json#/$defs/changeDecision"
         }
+      },
+      "additionalProperties": false
+    },
+    "harnessDecisionPayload": {
+      "type": "object",
+      "required": ["sequence", "decisionType", "reason"],
+      "properties": {
+        "sequence": { "type": "integer", "minimum": 1 },
+        "decisionType": {
+          "$ref": "https://codeharness.local/schemas/domain.schema.json#/$defs/decisionType"
+        },
+        "reason": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": false
     }

@@ -39,6 +39,7 @@ export const config = {
   maxContextHistoryMessages: intEnv('MAX_CONTEXT_HISTORY_MESSAGES', 8),
   maxContextReadBytes: intEnv('MAX_CONTEXT_READ_BYTES', 256 * 1024),
   maxVerificationRuns: intEnv('MAX_VERIFICATION_RUNS', 3),
+  maxConsecutiveHarnessFailures: intEnv('MAX_CONSECUTIVE_HARNESS_FAILURES', 3),
   maxImportFiles: intEnv('MAX_IMPORT_FILES', 20_000),
   maxImportBytes: intEnv('MAX_IMPORT_BYTES', 512 * 1024 * 1024),
   maxFileBytes: intEnv('MAX_FILE_BYTES', 5 * 1024 * 1024),

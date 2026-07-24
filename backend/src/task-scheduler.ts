@@ -100,7 +100,7 @@ export class TaskScheduler {
   resume(taskId: string): StoredTask {
     this.assertOpen();
     const task = this.requireTask(taskId);
-    if (task.status !== 'PAUSED' || !task.resumeStatus) {
+    if (!['PAUSED', 'WAITING_USER'].includes(task.status) || !task.resumeStatus) {
       throw new AppError(
         'CONFLICT',
         'Task does not have a resumable checkpoint',

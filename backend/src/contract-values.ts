@@ -40,7 +40,8 @@ export const eventTypes = [
   'task.cancelled',
   'task.applied',
   'verification.completed',
-  'change.updated'
+  'change.updated',
+  'harness.decision'
 ] as const;
 
 export const toolNames = [

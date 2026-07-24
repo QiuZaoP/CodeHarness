@@ -194,6 +194,28 @@ export interface RunBudget {
   usedVerificationRuns?: number;
 }
 
+export interface HarnessObservation {
+  status: 'SUCCEEDED' | 'FAILED';
+  summary: string;
+  toolCallId?: string;
+  verificationResultIds?: string[];
+  error?: {
+    code: ErrorCode;
+    message: string;
+    retryable: boolean;
+  };
+}
+
+export interface HarnessTurn {
+  sequence: number;
+  decision: ModelDecision;
+  status: 'DECIDED' | 'OBSERVED';
+  startedAt: string;
+  updatedAt: string;
+  toolCallIds?: string[];
+  observation?: HarnessObservation;
+}
+
 export interface RunState {
   schemaVersion: typeof contractSchemaVersion;
   runId: string;
@@ -208,6 +230,10 @@ export interface RunState {
   changedFiles: string[];
   verificationResultIds: string[];
   budget: RunBudget;
+  turnCount?: number;
+  consecutiveFailures?: number;
+  lastVerificationPassed?: boolean;
+  activeTurn?: HarnessTurn;
   stopReason?: string;
 }
 

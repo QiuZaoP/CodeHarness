@@ -81,8 +81,8 @@ describe('backend API', () => {
       state: {
         phase: 'READY_FOR_REVIEW',
         budget: {
-          usedSteps: 1,
-          usedToolCalls: 3,
+          usedSteps: 6,
+          usedToolCalls: 4,
           usedVerificationRuns: 1
         }
       }
@@ -97,7 +97,7 @@ describe('backend API', () => {
     expect(db.getWorkspaceSnapshots(task.id)).toEqual([
       expect.objectContaining({ taskId: task.id, kind: 'BASELINE' })
     ]);
-    expect(db.getToolCalls(task.id)).toHaveLength(3);
+    expect(db.getToolCalls(task.id)).toHaveLength(4);
     expect(db.getToolCalls(task.id).every((call) => call.status === 'SUCCEEDED')).toBe(true);
     for (const call of db.getToolCalls(task.id)) {
       expect(db.getAuditRecords('tool_call', call.id).map(({ action }) => action)).toEqual([

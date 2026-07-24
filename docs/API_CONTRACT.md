@@ -44,7 +44,7 @@
   冲突调用返回 `409 CONFLICT`。
 - `pause` 只接受已经获得租约的运行任务；它取消当前操作、进入 `PAUSED` 并持久化恢复
   目标。
-- `resume` 只接受带恢复目标的 `PAUSED`，获取新租约后返回 `202 Accepted`。
+- `resume` 接受带恢复目标的 `PAUSED` 或 `WAITING_USER`，获取新租约后返回 `202 Accepted`。
 - `cancel` 将允许的非终态任务转为终态 `CANCELLED`；重复取消返回 `409 CONFLICT`。
 - `apply` 当前只把 `READY_FOR_REVIEW` 转为 `APPLIED`，不把 Diff 写回项目源目录；文件级
   审批和目标仓库应用属于后续交付阶段。
@@ -96,6 +96,7 @@ task.completed
 - 任务：`task.created`、`task.state_changed`、`task.plan.updated`、`task.completed`、`task.failed`、`task.waiting_user`、`task.paused`、`task.resumed`、`task.cancelled`、`task.applied`
 - 工具：`tool.started`、`tool.completed`
 - 验证与变更：`verification.completed`、`change.updated`
+- Harness：`harness.decision`（模型决策已持久化后发布，不表示工具已经执行）
 
 每种事件的 payload 约束以 `schemas/event.schema.json` 为准。
 

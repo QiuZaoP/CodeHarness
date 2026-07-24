@@ -6,17 +6,23 @@ import { config } from './config.js';
 import type { ContextCandidate, ContextManager, SelectedContext } from './context-manager.js';
 import type { AppDatabase, TaskEventDraft, TaskRunCheckpoint } from './db.js';
 import { AppError } from './errors.js';
+import { assertDomainContract } from './event-contract.js';
 import type { ToolRegistrationPort } from './ports/tool-registry.js';
 import type { ModelGateway } from './ports/model-gateway.js';
 import type { CodeIndex, ProjectOverview } from './ports/code-index.js';
 import { taskStateMachine } from './state-machine.js';
 import { contractSchemaVersion } from './types.js';
 import type {
+  HarnessObservation,
+  HarnessTurn,
+  ModelDecision,
   StoredTask,
   RunState,
   TaskPlan,
   TaskStatus,
   ToolCall,
+  ToolCallRecord,
+  ToolResult,
   VerificationResult,
   WorkspaceSnapshot
 } from './types.js';
@@ -98,6 +104,7 @@ export class HarnessRunner {
       }
       if (task.status === 'PRECHECKING') {
         this.throwIfStopped(task.id, signal);
+        await this.precheck(task, signal);
         task = this.transition(task, 'PLANNING');
       }
       if (task.status === 'PLANNING') {
@@ -109,22 +116,15 @@ export class HarnessRunner {
       }
       if (task.status === 'EXECUTING') {
         this.throwIfStopped(task.id, signal);
-        const files = await this.callTool<string[]>(
-          task,
-          { name: 'list_files', arguments: { path: '.' } },
-          signal
-        );
-        this.throwIfStopped(task.id, signal);
-        const readme = files.find((file) => file.toLowerCase().endsWith('readme.md'));
-        if (readme) {
-          await this.callTool(task, { name: 'read_file', arguments: { path: readme } }, signal);
-        }
-        this.throwIfStopped(task.id, signal);
-        task = this.transition(this.requireTask(task.id), 'VERIFYING');
+        task = await this.executeLoop(task, signal);
       }
       if (task.status === 'VERIFYING') {
         this.throwIfStopped(task.id, signal);
-        task = await this.verify(task, signal);
+        task = this.transition(task, 'EXECUTING');
+        task = await this.executeLoop(task, signal);
+      }
+      if (['WAITING_USER', 'PAUSED', 'CANCELLED'].includes(task.status)) {
+        return task;
       }
       if (task.status !== 'READY_FOR_REVIEW') {
         throw new AppError(
@@ -146,7 +146,9 @@ export class HarnessRunner {
       }
       if (
         error instanceof AppError &&
-        (error.code === 'MODEL_ERROR' || error.code === 'INDEX_ERROR') &&
+        (error.code === 'MODEL_ERROR' ||
+          error.code === 'INDEX_ERROR' ||
+          this.requiresUserReview(error)) &&
         taskStateMachine.canTransition(current.status, 'WAITING_USER')
       ) {
         return this.transition(
@@ -210,7 +212,7 @@ export class HarnessRunner {
 
   resume(taskId: string): StoredTask {
     const task = this.requireTask(taskId);
-    if (task.status !== 'PAUSED' || !task.resumeStatus) {
+    if (!['PAUSED', 'WAITING_USER'].includes(task.status) || !task.resumeStatus) {
       throw new AppError(
         'CONFLICT',
         'Task does not have a resumable checkpoint',
@@ -312,9 +314,44 @@ export class HarnessRunner {
     return result.task;
   }
 
-  private async callTool<T>(task: StoredTask, tool: ToolCall, signal?: AbortSignal): Promise<T> {
+  private async callTool(
+    task: StoredTask,
+    tool: ToolCall,
+    toolCallId: string,
+    signal?: AbortSignal
+  ): Promise<ToolCallRecord> {
+    const existing = this.dependencies.database.getToolCall(toolCallId);
+    if (existing) {
+      if (existing.status === 'RUNNING') {
+        const finishedAt = new Date().toISOString();
+        const result: ToolResult = {
+          status: 'CANCELLED',
+          error: {
+            code: 'TASK_CANCELLED',
+            message: 'Interrupted tool outcome is unknown; the call was not replayed',
+            details: { category: 'INTERRUPTED_TOOL', toolCallId },
+            retryable: false
+          },
+          affectedFiles: [],
+          durationMs: Math.max(0, Date.now() - Date.parse(existing.startedAt))
+        };
+        const event = this.dependencies.database.completeToolCall(
+          toolCallId,
+          task.id,
+          result,
+          finishedAt,
+          {
+            type: 'tool.completed',
+            timestamp: finishedAt,
+            payload: { toolName: existing.tool.name, error: result.error!.message }
+          }
+        );
+        this.dependencies.broker.publish(event);
+        return this.dependencies.database.getToolCall(toolCallId)!;
+      }
+      return existing;
+    }
     const permissions = ['READ', 'WRITE', 'COMMAND'] as const;
-    this.dependencies.tools.validate(tool, permissions);
     const definition = this.dependencies.tools
       .definitions()
       .find((candidate) => candidate.name === tool.name);
@@ -329,12 +366,12 @@ export class HarnessRunner {
         this.synchronizeRunState(checkpoint.state, task)
       )
     );
-    const id = randomUUID();
     const startedAt = new Date().toISOString();
     const startedEvent = this.dependencies.database.startToolCall(
       {
-        id,
+        id: toolCallId,
         taskId: task.id,
+        stepId: checkpoint.state.currentStepId,
         tool,
         status: 'RUNNING',
         startedAt
@@ -346,14 +383,34 @@ export class HarnessRunner {
       }
     );
     this.dependencies.broker.publish(startedEvent);
-    const result = await this.dependencies.tools.execute(tool, {
-      workspacePath: task.workspacePath,
-      permissions,
-      signal
-    });
+    let result: ToolResult;
+    try {
+      this.dependencies.tools.validate(tool, permissions);
+      result = await this.dependencies.tools.execute(tool, {
+        workspacePath: task.workspacePath,
+        permissions,
+        signal
+      });
+    } catch (error) {
+      const appError =
+        error instanceof AppError
+          ? error
+          : new AppError('WORKSPACE_ERROR', error instanceof Error ? error.message : String(error));
+      result = {
+        status: signal?.aborted ? 'CANCELLED' : 'FAILED',
+        error: {
+          code: signal?.aborted ? 'TASK_CANCELLED' : appError.code,
+          message: appError.message,
+          details: appError.details,
+          retryable: this.isRetryable(appError)
+        },
+        affectedFiles: [],
+        durationMs: Math.max(0, Date.now() - Date.parse(startedAt))
+      };
+    }
     const finishedAt = new Date().toISOString();
     const completedEvent = this.dependencies.database.completeToolCall(
-      id,
+      toolCallId,
       task.id,
       result,
       finishedAt,
@@ -378,60 +435,562 @@ export class HarnessRunner {
     checkpoint = this.saveRunCheckpoint(checkpoint, state);
     this.dependencies.budgetManager.assertWithin(checkpoint.state);
     this.dependencies.budgetManager.assertDuration(checkpoint.startedAt, checkpoint.state.budget);
-    if (result.status !== 'SUCCEEDED') {
-      throw new AppError(
-        result.error?.code ?? 'WORKSPACE_ERROR',
-        result.error?.message ?? 'Tool execution failed',
-        result.error?.details,
-        result.status === 'CANCELLED' ? 409 : 400
+    const record = this.dependencies.database.getToolCall(toolCallId)!;
+    if (result.status === 'CANCELLED' && signal?.aborted) {
+      throw (
+        signal.reason ??
+        new AppError('TASK_CANCELLED', result.error?.message ?? 'Tool execution cancelled')
       );
     }
-    return result.output as T;
+    return record;
   }
 
-  private async verify(task: StoredTask, signal?: AbortSignal): Promise<StoredTask> {
+  private async precheck(task: StoredTask, signal?: AbortSignal): Promise<void> {
+    this.throwIfStopped(task.id, signal);
+    await this.dependencies.workspaceManager.assertReady(task.workspacePath);
+    const status = await this.dependencies.workspaceManager.getStatus(task.workspacePath);
+    if (!status.clean) {
+      throw new AppError(
+        'WORKSPACE_ERROR',
+        'Task workspace contains changes before execution',
+        { category: 'PRECHECK_DIRTY', entries: status.entries },
+        409
+      );
+    }
+    const project = this.dependencies.database.getProject(task.projectId);
+    const baseline = this.dependencies.database
+      .getWorkspaceSnapshots(task.id)
+      .find((snapshot) => snapshot.kind === 'BASELINE');
+    if (!project || !baseline) {
+      throw new AppError('WORKSPACE_ERROR', 'Task source metadata or baseline is missing');
+    }
+    const capturedRevision = project.sourceMetadata?.git.revision;
+    if (
+      capturedRevision &&
+      baseline.sourceRevision &&
+      capturedRevision !== baseline.sourceRevision
+    ) {
+      throw new AppError('CONFLICT', 'Task baseline does not match the imported source revision', {
+        capturedRevision,
+        baselineRevision: baseline.sourceRevision
+      });
+    }
+  }
+
+  private async executeLoop(task: StoredTask, signal?: AbortSignal): Promise<StoredTask> {
+    const controlledSignal = signal ?? new AbortController().signal;
+    while (this.requireTask(task.id).status === 'EXECUTING') {
+      this.throwIfStopped(task.id, signal);
+      task = this.requireTask(task.id);
+      let checkpoint = this.ensureRunCheckpoint(task);
+      checkpoint = this.ensureActivePlanStep(task, checkpoint);
+      task = this.requireTask(task.id);
+      let turn = checkpoint.state.activeTurn;
+      if (!turn || turn.status === 'OBSERVED') {
+        const decision = await this.nextDecision(task, controlledSignal);
+        checkpoint = this.beginTurn(task, decision);
+        turn = checkpoint.state.activeTurn!;
+      }
+      task = await this.dispatchDecision(task, turn, controlledSignal);
+    }
+    return this.requireTask(task.id);
+  }
+
+  private async nextDecision(task: StoredTask, signal: AbortSignal): Promise<ModelDecision> {
     let checkpoint = this.ensureRunCheckpoint(task);
     this.dependencies.budgetManager.assertDuration(checkpoint.startedAt, checkpoint.state.budget);
+    checkpoint = await this.summarizeHistory(task, checkpoint, signal);
+    const overview = await this.dependencies.codeIndex.getProjectOverview(task.projectId, signal);
+    this.throwIfStopped(task.id, signal);
+    const candidates = await this.contextCandidates(task, overview, checkpoint, signal);
+    const selection = this.dependencies.contextManager.select(candidates);
+    let state = {
+      ...this.synchronizeRunState(checkpoint.state, task),
+      contextRefs: selection.entries.map(({ reference }) => reference)
+    };
+    state = this.dependencies.budgetManager.recordReadBytes(state, selection.totalBytes);
+    checkpoint = this.saveRunCheckpoint(checkpoint, state);
+    this.dependencies.budgetManager.assertWithin(checkpoint.state);
     checkpoint = this.saveRunCheckpoint(
       checkpoint,
-      this.dependencies.budgetManager.reserveVerification(
-        this.synchronizeRunState(checkpoint.state, task)
-      )
+      this.dependencies.budgetManager.reserveStep(checkpoint.state)
     );
-    const verification = await this.callTool<CommandOutput>(
-      task,
-      {
-        name: 'run_command',
-        arguments: { executable: 'node', args: ['--version'] }
-      },
+    const response = await this.dependencies.modelGateway.decide(
+      this.planningRequest(checkpoint.state, selection.entries),
       signal
     );
-    this.throwIfStopped(task.id, signal);
-    const verificationResult: VerificationResult = {
-      id: randomUUID(),
-      taskId: task.id,
-      command: 'node --version',
-      status: verification.code === 0 ? 'PASSED' : 'FAILED',
-      exitCode: verification.code,
-      outputSummary: `${verification.stdout}\n${verification.stderr}`.trim().slice(0, 4000),
-      failureCategory: verification.code === 0 ? undefined : 'ENVIRONMENT',
-      createdAt: new Date().toISOString()
+    this.assertDecision(response.decision);
+    checkpoint = this.saveRunCheckpoint(
+      checkpoint,
+      this.dependencies.budgetManager.recordModelUsage(checkpoint.state, response.usage)
+    );
+    this.dependencies.budgetManager.assertWithin(checkpoint.state);
+    this.dependencies.budgetManager.assertDuration(checkpoint.startedAt, checkpoint.state.budget);
+    return response.decision;
+  }
+
+  private beginTurn(task: StoredTask, decision: ModelDecision): TaskRunCheckpoint {
+    const checkpoint = this.ensureRunCheckpoint(task);
+    const timestamp = new Date().toISOString();
+    const sequence = (checkpoint.state.turnCount ?? 0) + 1;
+    const toolCallCount =
+      decision.type === 'TOOL_CALL' ? 1 : decision.type === 'VERIFY' ? decision.commands.length : 0;
+    const turn: HarnessTurn = {
+      sequence,
+      decision,
+      status: 'DECIDED',
+      startedAt: timestamp,
+      updatedAt: timestamp,
+      toolCallIds: Array.from({ length: toolCallCount }, () => randomUUID())
     };
-    const verificationEvent = this.dependencies.database.recordVerification(verificationResult, {
-      type: 'verification.completed',
-      timestamp: verificationResult.createdAt,
-      payload: { verification: verificationResult }
-    });
-    this.dependencies.broker.publish(verificationEvent);
-    if (verification.code !== 0) {
-      throw new AppError('WORKSPACE_ERROR', 'Verification command failed', verification);
+    const state = {
+      ...this.synchronizeRunState(checkpoint.state, task),
+      turnCount: sequence,
+      activeTurn: turn
+    };
+    const result = this.dependencies.database.updateTaskRunWithAudit(
+      { ...checkpoint, state, updatedAt: timestamp },
+      checkpoint.version,
+      {
+        id: randomUUID(),
+        taskId: task.id,
+        action: 'harness.decision',
+        resourceType: 'harness_turn',
+        resourceId: `${checkpoint.runId}:${sequence}`,
+        after: this.decisionAudit(decision),
+        timestamp
+      },
+      {
+        type: 'harness.decision',
+        timestamp,
+        payload: {
+          sequence,
+          decisionType: decision.type,
+          reason: decision.reason
+        }
+      }
+    );
+    if (result.event) this.dependencies.broker.publish(result.event);
+    return result.checkpoint;
+  }
+
+  private observeTurn(taskId: string, observation: HarnessObservation): TaskRunCheckpoint {
+    const checkpoint = this.dependencies.database.getTaskRun(taskId);
+    const turn = checkpoint?.state.activeTurn;
+    if (!checkpoint || !turn || turn.status !== 'DECIDED') {
+      throw new AppError(
+        'CONFLICT',
+        'Harness turn is not awaiting an observation',
+        { taskId },
+        409
+      );
     }
+    const timestamp = new Date().toISOString();
+    const failed = observation.status === 'FAILED';
+    const state: RunState = {
+      ...this.synchronizeRunState(checkpoint.state, this.requireTask(taskId)),
+      consecutiveFailures: failed ? (checkpoint.state.consecutiveFailures ?? 0) + 1 : 0,
+      lastVerificationPassed: observation.verificationResultIds
+        ? observation.status === 'SUCCEEDED'
+        : checkpoint.state.lastVerificationPassed,
+      activeTurn: {
+        ...turn,
+        status: 'OBSERVED',
+        updatedAt: timestamp,
+        observation
+      }
+    };
+    return this.dependencies.database.updateTaskRunWithAudit(
+      { ...checkpoint, state, updatedAt: timestamp },
+      checkpoint.version,
+      {
+        id: randomUUID(),
+        taskId,
+        action: 'harness.observation',
+        resourceType: 'harness_turn',
+        resourceId: `${checkpoint.runId}:${turn.sequence}`,
+        before: { status: 'DECIDED' },
+        after: observation,
+        timestamp
+      }
+    ).checkpoint;
+  }
+
+  private async dispatchDecision(
+    task: StoredTask,
+    turn: HarnessTurn,
+    signal: AbortSignal
+  ): Promise<StoredTask> {
+    const decision = turn.decision;
+    if (decision.type === 'PLAN_UPDATE') {
+      try {
+        this.assertPlan(decision.plan);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const observation: HarnessObservation = {
+          status: 'FAILED',
+          summary: message,
+          error: {
+            code: error instanceof AppError ? error.code : 'MODEL_ERROR',
+            message,
+            retryable: true
+          }
+        };
+        const checkpoint = this.observeTurn(task.id, observation);
+        return this.afterFailureLimit(task, checkpoint, observation);
+      }
+      task = this.updatePlan(task, decision.plan);
+      this.observeTurn(task.id, {
+        status: 'SUCCEEDED',
+        summary: `Plan updated with ${decision.plan.steps.length} steps`
+      });
+      return task;
+    }
+    if (decision.type === 'TOOL_CALL') {
+      const record = await this.callTool(task, decision.tool, turn.toolCallIds![0]!, signal);
+      const observation = this.toolObservation(record);
+      const checkpoint = this.observeTurn(task.id, observation);
+      return this.afterFailureLimit(task, checkpoint, observation);
+    }
+    if (decision.type === 'ASK_USER') {
+      this.observeTurn(task.id, {
+        status: 'SUCCEEDED',
+        summary: `Waiting for user input: ${decision.question}`
+      });
+      return this.transition(
+        this.requireTask(task.id),
+        'WAITING_USER',
+        {
+          stopReason: decision.question,
+          resumeStatus: 'EXECUTING',
+          controlRequest: null
+        },
+        [{ type: 'task.waiting_user', payload: { message: decision.question } }]
+      );
+    }
+    if (decision.type === 'VERIFY') {
+      return this.executeVerification(task, turn, signal);
+    }
+    return this.completeDecision(task, decision);
+  }
+
+  private async executeVerification(
+    task: StoredTask,
+    turn: HarnessTurn,
+    signal: AbortSignal
+  ): Promise<StoredTask> {
+    if (turn.decision.type !== 'VERIFY') return task;
+    if (turn.decision.commands.length === 0) {
+      const observation: HarnessObservation = {
+        status: 'FAILED',
+        summary: 'Verification requires at least one command',
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Verification requires at least one command',
+          retryable: false
+        }
+      };
+      const checkpoint = this.observeTurn(task.id, observation);
+      return this.afterFailureLimit(task, checkpoint, observation);
+    }
+    task = this.transition(task, 'VERIFYING');
+    const resultIds: string[] = [];
+    let failed = false;
+    const existingResults = this.dependencies.database
+      .getVerificationResults(task.id)
+      .filter(({ createdAt }) => createdAt >= turn.startedAt);
+    for (const [index, command] of turn.decision.commands.entries()) {
+      const existingVerification = existingResults[index];
+      if (existingVerification?.command === command) {
+        resultIds.push(existingVerification.id);
+        failed ||= existingVerification.status !== 'PASSED';
+        continue;
+      }
+      let checkpoint = this.ensureRunCheckpoint(task);
+      checkpoint = this.saveRunCheckpoint(
+        checkpoint,
+        this.dependencies.budgetManager.reserveVerification(
+          this.synchronizeRunState(checkpoint.state, task)
+        )
+      );
+      const tool = this.verificationTool(command);
+      const call = await this.callTool(task, tool, turn.toolCallIds![index]!, signal);
+      this.throwIfStopped(task.id, signal);
+      const output = call.result?.output as CommandOutput | undefined;
+      const passed = call.result?.status === 'SUCCEEDED' && output?.code === 0;
+      failed ||= !passed;
+      const verification: VerificationResult = {
+        id: randomUUID(),
+        taskId: task.id,
+        command,
+        status: passed ? 'PASSED' : 'FAILED',
+        exitCode: output?.code,
+        outputSummary: output
+          ? `${output.stdout}\n${output.stderr}`.trim().slice(0, 4000)
+          : (call.result?.error?.message ?? 'Verification tool failed'),
+        failureCategory: passed ? undefined : this.verificationFailureCategory(command, call),
+        createdAt: new Date().toISOString()
+      };
+      resultIds.push(verification.id);
+      const event = this.dependencies.database.recordVerification(verification, {
+        type: 'verification.completed',
+        timestamp: verification.createdAt,
+        payload: { verification }
+      });
+      this.dependencies.broker.publish(event);
+    }
+    const plan = failed ? task.plan : this.completedPlan(task.plan);
+    task = this.transition(this.requireTask(task.id), 'EXECUTING', { plan }, [
+      ...(plan && plan !== task.plan
+        ? [{ type: 'task.plan.updated' as const, payload: { plan } }]
+        : [])
+    ]);
+    const observation: HarnessObservation = failed
+      ? {
+          status: 'FAILED',
+          summary: 'One or more verification commands failed',
+          verificationResultIds: resultIds,
+          error: {
+            code: 'WORKSPACE_ERROR',
+            message: 'Verification failed',
+            retryable: true
+          }
+        }
+      : {
+          status: 'SUCCEEDED',
+          summary: `${resultIds.length} verification command(s) passed`,
+          verificationResultIds: resultIds
+        };
+    const checkpoint = this.observeTurn(task.id, observation);
+    return this.afterFailureLimit(task, checkpoint, observation);
+  }
+
+  private completeDecision(
+    task: StoredTask,
+    decision: Extract<ModelDecision, { type: 'COMPLETE' }>
+  ): StoredTask {
+    const planComplete = task.plan?.steps.every(({ status }) => status === 'DONE') ?? false;
+    const verified =
+      this.dependencies.database.getTaskRun(task.id)?.state.lastVerificationPassed === true;
+    if (!planComplete || !verified) {
+      const observation: HarnessObservation = {
+        status: 'FAILED',
+        summary: 'Completion rejected because the plan or verification is incomplete',
+        error: {
+          code: 'CONFLICT',
+          message: 'Harness completion conditions are not satisfied',
+          retryable: true
+        }
+      };
+      const checkpoint = this.observeTurn(task.id, observation);
+      return this.afterFailureLimit(task, checkpoint, observation);
+    }
+    this.observeTurn(task.id, { status: 'SUCCEEDED', summary: decision.summary });
+    const latestVerification = this.dependencies.database
+      .getVerificationResults(task.id)
+      .filter(({ status }) => status === 'PASSED')
+      .at(-1);
     return this.transition(this.requireTask(task.id), 'READY_FOR_REVIEW', {}, [
       {
         type: 'task.completed',
-        payload: { verification: { command: 'node --version', code: verification.code } }
+        payload: {
+          verification: {
+            command: latestVerification!.command,
+            code: latestVerification!.exitCode ?? 0
+          }
+        }
       }
     ]);
+  }
+
+  private ensureActivePlanStep(task: StoredTask, checkpoint: TaskRunCheckpoint): TaskRunCheckpoint {
+    if (checkpoint.state.currentStepId || !task.plan) return checkpoint;
+    const first = task.plan.steps.find(({ status }) => status !== 'DONE');
+    if (!first) return checkpoint;
+    const plan: TaskPlan = {
+      ...task.plan,
+      steps: task.plan.steps.map((step) =>
+        step.id === first.id ? { ...step, status: 'RUNNING' as const } : step
+      )
+    };
+    const updatedTask = this.updatePlan(task, plan);
+    return this.saveRunCheckpoint(this.dependencies.database.getTaskRun(task.id)!, {
+      ...this.dependencies.database.getTaskRun(task.id)!.state,
+      phase: updatedTask.status,
+      plan,
+      currentStepId: first.id
+    });
+  }
+
+  private updatePlan(task: StoredTask, plan: TaskPlan): StoredTask {
+    this.assertPlan(plan);
+    return this.transition(task, task.status, { plan }, [
+      { type: 'task.plan.updated', payload: { plan } }
+    ]);
+  }
+
+  private assertPlan(plan: TaskPlan): void {
+    if (!plan.goal.trim() || plan.steps.length === 0 || plan.steps.length > config.maxTaskSteps) {
+      throw new AppError(
+        'MODEL_ERROR',
+        'Model returned an invalid task plan',
+        { category: 'INVALID_PLAN', stepCount: plan.steps.length },
+        502
+      );
+    }
+    const ids = new Set(plan.steps.map(({ id }) => id));
+    if (
+      ids.size !== plan.steps.length ||
+      plan.steps.some(({ id, title }) => !id.trim() || !title.trim()) ||
+      plan.steps.filter(({ status }) => status === 'RUNNING').length > 1
+    ) {
+      throw new AppError(
+        'MODEL_ERROR',
+        'Task plan step identifiers or statuses are invalid',
+        { category: 'INVALID_PLAN' },
+        502
+      );
+    }
+  }
+
+  private completedPlan(plan: TaskPlan | undefined): TaskPlan | undefined {
+    if (!plan) return undefined;
+    return {
+      ...plan,
+      steps: plan.steps.map((step) => ({ ...step, status: 'DONE' as const }))
+    };
+  }
+
+  private toolObservation(record: ToolCallRecord): HarnessObservation {
+    if (record.result?.status === 'SUCCEEDED') {
+      return {
+        status: 'SUCCEEDED',
+        summary: JSON.stringify(this.summary(record.result.output)),
+        toolCallId: record.id
+      };
+    }
+    return {
+      status: 'FAILED',
+      summary: record.result?.error?.message ?? `Tool ended in ${record.status}`,
+      toolCallId: record.id,
+      error: {
+        code: record.result?.error?.code ?? 'WORKSPACE_ERROR',
+        message: record.result?.error?.message ?? 'Tool execution failed',
+        retryable: record.result?.error?.retryable ?? false
+      }
+    };
+  }
+
+  private afterFailureLimit(
+    task: StoredTask,
+    checkpoint: TaskRunCheckpoint,
+    observation: HarnessObservation
+  ): StoredTask {
+    if (
+      observation.status !== 'FAILED' ||
+      (checkpoint.state.consecutiveFailures ?? 0) < config.maxConsecutiveHarnessFailures
+    ) {
+      return this.requireTask(task.id);
+    }
+    const message = `Harness stopped after ${checkpoint.state.consecutiveFailures} consecutive failures`;
+    return this.transition(
+      this.requireTask(task.id),
+      'WAITING_USER',
+      {
+        stopReason: message,
+        resumeStatus: 'EXECUTING',
+        controlRequest: null
+      },
+      [{ type: 'task.waiting_user', payload: { message } }]
+    );
+  }
+
+  private verificationTool(command: string): ToolCall {
+    const trimmed = command.trim();
+    if (!trimmed || /[;&|><`$"'\\\r\n]/.test(trimmed) || trimmed.split(/\s+/).length > 51) {
+      return {
+        name: 'run_command',
+        arguments: { executable: '', args: [] }
+      };
+    }
+    const [executable, ...args] = trimmed.split(/\s+/);
+    return {
+      name: 'run_command',
+      arguments: { executable, args }
+    };
+  }
+
+  private verificationFailureCategory(
+    command: string,
+    call: ToolCallRecord
+  ): VerificationResult['failureCategory'] {
+    if (call.result?.error?.code === 'COMMAND_NOT_ALLOWED') return 'ENVIRONMENT';
+    return /\btest\b/i.test(command) ? 'TEST' : 'CODE';
+  }
+
+  private decisionAudit(decision: ModelDecision): Record<string, unknown> {
+    if (decision.type === 'TOOL_CALL') {
+      return {
+        type: decision.type,
+        reason: decision.reason,
+        toolName: decision.tool.name,
+        arguments: this.safeArguments(decision.tool.arguments)
+      };
+    }
+    if (decision.type === 'VERIFY') {
+      return {
+        type: decision.type,
+        reason: decision.reason,
+        commandCount: decision.commands.length
+      };
+    }
+    if (decision.type === 'PLAN_UPDATE') {
+      return {
+        type: decision.type,
+        reason: decision.reason,
+        stepCount: decision.plan.steps.length
+      };
+    }
+    return { type: decision.type, reason: decision.reason };
+  }
+
+  private isRetryable(error: AppError): boolean {
+    return (
+      error.code === 'CONFLICT' ||
+      error.code === 'INDEX_ERROR' ||
+      (error.code === 'WORKSPACE_ERROR' &&
+        typeof error.details === 'object' &&
+        error.details !== null &&
+        'category' in error.details &&
+        ['TIMEOUT', 'TEMPORARY'].includes(
+          String((error.details as { category: unknown }).category)
+        ))
+    );
+  }
+
+  private requiresUserReview(error: AppError): boolean {
+    if (typeof error.details !== 'object' || error.details === null) return false;
+    const category =
+      'category' in error.details
+        ? String((error.details as { category: unknown }).category)
+        : undefined;
+    return category === 'INTERRUPTED_TOOL' || category === 'PRECHECK_DIRTY';
+  }
+
+  private assertDecision(decision: ModelDecision): void {
+    try {
+      assertDomainContract('modelDecision', decision);
+    } catch (error) {
+      throw new AppError(
+        'MODEL_ERROR',
+        'Model returned an invalid Decision',
+        {
+          category: 'INVALID_DECISION',
+          cause: error instanceof Error ? error.message : String(error)
+        },
+        502
+      );
+    }
   }
 
   private async plan(task: StoredTask, signal?: AbortSignal): Promise<TaskPlan> {
@@ -463,6 +1022,7 @@ export class HarnessRunner {
       this.planningRequest(checkpoint.state, selection.entries),
       controlledSignal
     );
+    this.assertDecision(response.decision);
     checkpoint = this.saveRunCheckpoint(
       checkpoint,
       this.dependencies.budgetManager.recordModelUsage(checkpoint.state, response.usage)
@@ -478,6 +1038,7 @@ export class HarnessRunner {
         502
       );
     }
+    this.assertPlan(response.decision.plan);
     return response.decision.plan;
   }
 
@@ -547,6 +1108,7 @@ export class HarnessRunner {
       ...state,
       phase: task.status,
       plan: task.plan,
+      currentStepId: task.plan?.steps.find(({ status }) => status === 'RUNNING')?.id,
       toolCallIds: toolCalls.map(({ id }) => id),
       workspaceSnapshotId: snapshots.at(-1)?.id,
       verificationResultIds: verifications.map(({ id }) => id),

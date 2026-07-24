@@ -18,7 +18,7 @@ export class FakeModelGateway implements ModelGateway {
 
   constructor(
     private readonly decisions:
-      readonly ModelDecision[] | FakeDecisionFactory = FakeModelGateway.planningDecision
+      readonly ModelDecision[] | FakeDecisionFactory = FakeModelGateway.defaultDecision
   ) {}
 
   async decide(
@@ -73,7 +73,43 @@ export class FakeModelGateway implements ModelGateway {
     };
   }
 
-  private static planningDecision(request: DecisionRequest): ModelDecision {
+  private static defaultDecision(request: DecisionRequest): ModelDecision {
+    if (request.runState.phase !== 'PLANNING' && request.runState.plan) {
+      const toolCallCount = request.runState.toolCallIds.length;
+      if (toolCallCount === 0) {
+        return {
+          type: 'TOOL_CALL',
+          reason: 'Inspect the workspace root',
+          tool: { name: 'list_files', arguments: { path: '.' } }
+        };
+      }
+      if (toolCallCount === 1) {
+        return {
+          type: 'TOOL_CALL',
+          reason: 'Read the project overview',
+          tool: { name: 'read_file', arguments: { path: 'README.md' } }
+        };
+      }
+      if (toolCallCount === 2) {
+        return {
+          type: 'TOOL_CALL',
+          reason: 'Confirm the isolated workspace state',
+          tool: { name: 'git_status', arguments: {} }
+        };
+      }
+      if (request.runState.verificationResultIds.length === 0) {
+        return {
+          type: 'VERIFY',
+          reason: 'Run the planned baseline verification',
+          commands: ['node --version']
+        };
+      }
+      return {
+        type: 'COMPLETE',
+        reason: 'The plan and verification are complete',
+        summary: 'Inspected the project and completed baseline verification'
+      };
+    }
     const goal =
       request.context.find(({ reference }) => reference.source === 'user-goal')?.content ??
       'Complete the requested task';

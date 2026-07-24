@@ -9,6 +9,7 @@ import { ContextManager } from '../src/context-manager.js';
 import { FakeCodeIndex } from '../src/adapters/fake-code-index.js';
 import { FakeModelGateway } from '../src/adapters/fake-model-gateway.js';
 import { AppDatabase, type TaskEventDraft } from '../src/db.js';
+import { AppError } from '../src/errors.js';
 import { HarnessRunner } from '../src/harness.js';
 import type { ToolExecutionContext, ToolRegistrationPort } from '../src/ports/tool-registry.js';
 import type { ModelGateway } from '../src/ports/model-gateway.js';
@@ -41,7 +42,11 @@ class BlockingTools implements ToolRegistrationPort {
     return [];
   }
 
-  validate(): void {}
+  validate(call: ToolCall): void {
+    if (call.name === 'search_symbol') {
+      throw new AppError('VALIDATION_ERROR', 'Fixture tool is not registered');
+    }
+  }
 
   async execute(call: ToolCall, context: ToolExecutionContext): Promise<ToolResult> {
     this.calls.push(structuredClone(call));
@@ -69,9 +74,15 @@ class BlockingTools implements ToolRegistrationPort {
         ? ['README.md']
         : call.name === 'run_command'
           ? {
-              code: 0,
+              code:
+                Array.isArray(call.arguments.args) && call.arguments.args.includes('--fail')
+                  ? 1
+                  : 0,
               stdout: 'v22.0.0\n',
-              stderr: '',
+              stderr:
+                Array.isArray(call.arguments.args) && call.arguments.args.includes('--fail')
+                  ? 'fixture failure'
+                  : '',
               stdoutBytes: 9,
               stderrBytes: 0,
               truncated: false
@@ -210,7 +221,29 @@ function stateEvent(
   };
 }
 
+const plannedTask: TaskPlan = {
+  goal: 'Inspect fixture',
+  assumptions: [],
+  steps: [{ id: 'inspect', title: 'Inspect fixture', status: 'PENDING' }],
+  verification: ['node --version']
+};
+
 describe('task lifecycle scheduler', () => {
+  it('stops at precheck when the isolated workspace already contains user changes', async () => {
+    const { database, scheduler, task, tools } = await fixture({ blockFirstList: false });
+    await fs.writeFile(path.join(task.workspacePath, 'README.md'), '# User change\n');
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)).toMatchObject({
+      status: 'WAITING_USER',
+      resumeStatus: 'PLANNING',
+      stopReason: 'Task workspace contains changes before execution'
+    });
+    expect(tools.calls).toEqual([]);
+  });
+
   it('prevents duplicate runners, pauses cooperatively, and resumes from a checkpoint', async () => {
     const { database, scheduler, task, tools } = await fixture();
     expect(scheduler.start(task.id).status).toBe('CREATED');
@@ -262,6 +295,35 @@ describe('task lifecycle scheduler', () => {
       ['tool.started', 'tool.completed']
     );
     expect(database.getTaskLease(task.id)).toBeUndefined();
+  });
+
+  it('does not replay an interrupted tool with an uncertain outcome', async () => {
+    const { database, scheduler, task, tools } = await fixture();
+    scheduler.start(task.id);
+    await tools.firstCallStarted;
+    await scheduler.pause(task.id);
+
+    const [interrupted] = database.getToolCalls(task.id);
+    database.connection
+      .prepare(
+        "UPDATE tool_calls SET status = 'RUNNING', finished_at = NULL, result_json = NULL WHERE id = ?"
+      )
+      .run(interrupted!.id);
+
+    scheduler.resume(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(tools.calls.filter(({ name }) => name === 'list_files')).toHaveLength(1);
+    expect(database.getToolCall(interrupted!.id)).toMatchObject({
+      status: 'CANCELLED',
+      result: {
+        error: {
+          message: 'Interrupted tool outcome is unknown; the call was not replayed',
+          retryable: false
+        }
+      }
+    });
   });
 
   it('recovers a lease that expires after startup into a resumable pause', async () => {
@@ -366,11 +428,11 @@ describe('task lifecycle scheduler', () => {
       state: {
         phase: 'READY_FOR_REVIEW',
         budget: {
-          usedSteps: 1,
-          usedToolCalls: 3,
-          usedInputTokens: 13,
-          usedOutputTokens: 6,
-          usedCost: 0.4,
+          usedSteps: 6,
+          usedToolCalls: 4,
+          usedInputTokens: 48,
+          usedOutputTokens: 21,
+          usedCost: 1.65,
           usedVerificationRuns: 1
         }
       }
@@ -424,5 +486,177 @@ describe('task lifecycle scheduler', () => {
       payload: { status: 'PAUSED' }
     });
     expect(database.getTaskLease(task.id)).toBeUndefined();
+  });
+
+  it('persists every decision and observation across a multi-turn run', async () => {
+    const { database, scheduler, task } = await fixture({ blockFirstList: false });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    const run = database.getTaskRun(task.id);
+    expect(run?.state).toMatchObject({
+      phase: 'READY_FOR_REVIEW',
+      turnCount: 5,
+      consecutiveFailures: 0,
+      activeTurn: {
+        sequence: 5,
+        status: 'OBSERVED',
+        decision: { type: 'COMPLETE' },
+        observation: { status: 'SUCCEEDED' }
+      }
+    });
+    for (let sequence = 1; sequence <= 5; sequence += 1) {
+      expect(
+        database
+          .getAuditRecords('harness_turn', `${run!.runId}:${sequence}`)
+          .map(({ action }) => action)
+      ).toEqual(['harness.decision', 'harness.observation']);
+    }
+    expect(
+      database
+        .getEvents(task.id)
+        .filter(({ type }) => type === 'harness.decision')
+        .map(({ payload }) => payload.sequence)
+    ).toEqual([1, 2, 3, 4, 5]);
+    expect(
+      database.getToolCalls(task.id).filter(({ stepId }) => stepId === 'inspect')
+    ).toHaveLength(4);
+  });
+
+  it('waits for an ASK_USER decision and resumes the persisted loop', async () => {
+    const modelGateway = new FakeModelGateway([
+      { type: 'PLAN_UPDATE', reason: 'Plan first', plan: plannedTask },
+      { type: 'ASK_USER', reason: 'Need confirmation', question: 'Continue inspection?' },
+      {
+        type: 'TOOL_CALL',
+        reason: 'Inspect files',
+        tool: { name: 'list_files', arguments: { path: '.' } }
+      },
+      {
+        type: 'TOOL_CALL',
+        reason: 'Read overview',
+        tool: { name: 'read_file', arguments: { path: 'README.md' } }
+      },
+      {
+        type: 'TOOL_CALL',
+        reason: 'Check status',
+        tool: { name: 'git_status', arguments: {} }
+      },
+      { type: 'VERIFY', reason: 'Verify', commands: ['node --version'] },
+      { type: 'COMPLETE', reason: 'Done', summary: 'Inspection complete' }
+    ]);
+    const { database, scheduler, task } = await fixture({
+      blockFirstList: false,
+      modelGateway
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+    expect(database.getTask(task.id)).toMatchObject({
+      status: 'WAITING_USER',
+      resumeStatus: 'EXECUTING',
+      stopReason: 'Continue inspection?'
+    });
+
+    scheduler.resume(task.id);
+    await scheduler.waitForIdle(task.id);
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(database.getEvents(task.id).map(({ type }) => type)).toEqual(
+      expect.arrayContaining(['task.waiting_user', 'task.resumed', 'task.completed'])
+    );
+  });
+
+  it('records rejected tools and stops after bounded consecutive failures', async () => {
+    const rejected = {
+      type: 'TOOL_CALL' as const,
+      reason: 'Try unavailable tool',
+      tool: { name: 'search_symbol' as const, arguments: { query: 'fixture' } }
+    };
+    const { database, scheduler, task } = await fixture({
+      blockFirstList: false,
+      modelGateway: new FakeModelGateway([
+        { type: 'PLAN_UPDATE', reason: 'Plan first', plan: plannedTask },
+        rejected,
+        rejected,
+        rejected
+      ])
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)).toMatchObject({
+      status: 'WAITING_USER',
+      resumeStatus: 'EXECUTING',
+      stopReason: 'Harness stopped after 3 consecutive failures'
+    });
+    expect(database.getToolCalls(task.id)).toHaveLength(3);
+    expect(database.getToolCalls(task.id).every(({ status }) => status === 'FAILED')).toBe(true);
+    expect(database.getTaskRun(task.id)?.state).toMatchObject({
+      turnCount: 3,
+      consecutiveFailures: 3,
+      activeTurn: {
+        status: 'OBSERVED',
+        observation: {
+          status: 'FAILED',
+          error: { code: 'VALIDATION_ERROR', retryable: false }
+        }
+      }
+    });
+  });
+
+  it('rejects model completion until the plan has passed verification', async () => {
+    const premature = {
+      type: 'COMPLETE' as const,
+      reason: 'Claim completion early',
+      summary: 'Done'
+    };
+    const { database, scheduler, task } = await fixture({
+      blockFirstList: false,
+      modelGateway: new FakeModelGateway([
+        { type: 'PLAN_UPDATE', reason: 'Plan first', plan: plannedTask },
+        premature,
+        premature,
+        premature
+      ])
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('WAITING_USER');
+    expect(database.getVerificationResults(task.id)).toEqual([]);
+    expect(database.getEvents(task.id).map(({ type }) => type)).not.toContain('task.completed');
+  });
+
+  it('rejects completion when the latest verification supersedes an earlier pass', async () => {
+    const premature = {
+      type: 'COMPLETE' as const,
+      reason: 'Claim completion after a failure',
+      summary: 'Done'
+    };
+    const { database, scheduler, task } = await fixture({
+      blockFirstList: false,
+      modelGateway: new FakeModelGateway([
+        { type: 'PLAN_UPDATE', reason: 'Plan first', plan: plannedTask },
+        { type: 'VERIFY', reason: 'Initial pass', commands: ['node --version'] },
+        { type: 'VERIFY', reason: 'Latest failure', commands: ['node --fail'] },
+        premature,
+        premature,
+        premature
+      ])
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('WAITING_USER');
+    expect(database.getTaskRun(task.id)?.state.lastVerificationPassed).toBe(false);
+    expect(database.getVerificationResults(task.id).map(({ status }) => status)).toEqual([
+      'PASSED',
+      'FAILED'
+    ]);
+    expect(database.getEvents(task.id).map(({ type }) => type)).not.toContain('task.completed');
   });
 });

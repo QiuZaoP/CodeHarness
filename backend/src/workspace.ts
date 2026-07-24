@@ -274,6 +274,15 @@ export class WorkspaceManager {
     return { clean: entries.length === 0, entries };
   }
 
+  async assertReady(workspace: string): Promise<void> {
+    const root = await this.requireManagedWorkspace(workspace);
+    await fs.access(root, fsConstants.R_OK | fsConstants.W_OK);
+    const gitDirectory = await fs.lstat(path.join(root, '.git')).catch(() => undefined);
+    if (!gitDirectory?.isDirectory()) {
+      throw new AppError('WORKSPACE_ERROR', 'Task workspace is not an isolated Git repository');
+    }
+  }
+
   async readOptionalTextFile(
     workspace: string,
     requestedPath: string,

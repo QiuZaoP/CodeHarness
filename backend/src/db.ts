@@ -221,6 +221,22 @@ export class AppDatabase {
     return this.writeTransaction(() => this.taskRuns.update(checkpoint, expectedVersion));
   }
 
+  updateTaskRunWithAudit(
+    checkpoint: TaskRunCheckpoint,
+    expectedVersion: number,
+    audit: StoredAuditRecord,
+    event?: TaskEventDraft
+  ): { checkpoint: TaskRunCheckpoint; event?: TaskEvent } {
+    return this.writeTransaction(() => {
+      const updated = this.taskRuns.update(checkpoint, expectedVersion);
+      this.audits.create(audit);
+      const storedEvent = event
+        ? this.events.create({ ...event, taskId: checkpoint.taskId })
+        : undefined;
+      return { checkpoint: updated, event: storedEvent };
+    });
+  }
+
   requestTaskControl(
     taskId: string,
     controlRequest: NonNullable<StoredTask['controlRequest']>,
@@ -366,6 +382,10 @@ export class AppDatabase {
 
   getToolCalls(taskId: string): ToolCallRecord[] {
     return this.toolCalls.listByTask(taskId);
+  }
+
+  getToolCall(toolCallId: string): ToolCallRecord | undefined {
+    return this.toolCalls.findById(toolCallId);
   }
 
   recordVerification(result: VerificationResult, event: TaskEventDraft): TaskEvent {
