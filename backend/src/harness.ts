@@ -7,11 +7,11 @@ import type {
   StoredTask,
   TaskPlan,
   TaskStatus,
-  ToolName,
-  ToolResult,
+  ToolCall,
   VerificationResult,
   WorkspaceSnapshot
 } from './types.js';
+import type { CommandOutput } from './command-runner.js';
 import type { ToolExecutor } from './tools.js';
 import type { WorkspaceManager } from './workspace.js';
 import { config } from './config.js';
@@ -72,8 +72,7 @@ export class HarnessRunner {
     return result.task;
   }
 
-  async run(taskId: string): Promise<StoredTask> {
-    const { tools } = this.dependencies;
+  async run(taskId: string, signal?: AbortSignal): Promise<StoredTask> {
     let task = this.requireTask(taskId);
     try {
       task = this.transition(task, 'PRECHECKING');
@@ -83,21 +82,23 @@ export class HarnessRunner {
       ]);
       task = this.transition(task, 'EXECUTING');
 
-      const files = await this.callTool(task, 'list_files', { path: '.' }, () =>
-        tools.listFiles(task.workspacePath)
+      const files = await this.callTool<string[]>(
+        task,
+        { name: 'list_files', arguments: { path: '.' } },
+        signal
       );
       const readme = files.find((file) => file.toLowerCase().endsWith('readme.md'));
       if (readme)
-        await this.callTool(task, 'read_file', { path: readme }, () =>
-          tools.readFile(task.workspacePath, readme)
-        );
+        await this.callTool(task, { name: 'read_file', arguments: { path: readme } }, signal);
 
       task = this.transition(task, 'VERIFYING');
-      const verification = await this.callTool(
+      const verification = await this.callTool<CommandOutput>(
         task,
-        'run_command',
-        { command: 'node --version' },
-        () => tools.runCommand(task.workspacePath, 'node --version')
+        {
+          name: 'run_command',
+          arguments: { executable: 'node', args: ['--version'] }
+        },
+        signal
       );
       const verificationResult: VerificationResult = {
         id: randomUUID(),
@@ -223,79 +224,56 @@ export class HarnessRunner {
     return result.task;
   }
 
-  private async callTool<T>(
-    task: StoredTask,
-    toolName: ToolName,
-    arguments_: Record<string, unknown>,
-    action: () => Promise<T>
-  ): Promise<T> {
+  private async callTool<T>(task: StoredTask, tool: ToolCall, signal?: AbortSignal): Promise<T> {
+    const permissions = ['READ', 'WRITE', 'COMMAND'] as const;
+    this.dependencies.tools.validate(tool, permissions);
     const id = randomUUID();
     const startedAt = new Date().toISOString();
     const startedEvent = this.dependencies.database.startToolCall(
       {
         id,
         taskId: task.id,
-        tool: { name: toolName, arguments: arguments_ },
+        tool,
         status: 'RUNNING',
         startedAt
       },
       {
         type: 'tool.started',
         timestamp: startedAt,
-        payload: { toolName, arguments: arguments_ }
+        payload: { toolName: tool.name, arguments: this.safeArguments(tool.arguments) }
       }
     );
     this.dependencies.broker.publish(startedEvent);
-    const startedTime = Date.now();
-    try {
-      const result = await action();
-      const summary = this.summary(result);
-      const finishedAt = new Date().toISOString();
-      const toolResult: ToolResult = {
-        status: 'SUCCEEDED',
-        output: summary,
-        affectedFiles: [],
-        durationMs: Date.now() - startedTime
-      };
-      const completedEvent = this.dependencies.database.completeToolCall(
-        id,
-        task.id,
-        toolResult,
-        finishedAt,
-        {
-          type: 'tool.completed',
-          timestamp: finishedAt,
-          payload: { toolName, result: summary }
-        }
+    const result = await this.dependencies.tools.execute(tool, {
+      workspacePath: task.workspacePath,
+      permissions,
+      signal
+    });
+    const finishedAt = new Date().toISOString();
+    const completedEvent = this.dependencies.database.completeToolCall(
+      id,
+      task.id,
+      result,
+      finishedAt,
+      {
+        type: 'tool.completed',
+        timestamp: finishedAt,
+        payload:
+          result.status === 'SUCCEEDED'
+            ? { toolName: tool.name, result: this.summary(result.output) }
+            : { toolName: tool.name, error: result.error?.message ?? result.status }
+      }
+    );
+    this.dependencies.broker.publish(completedEvent);
+    if (result.status !== 'SUCCEEDED') {
+      throw new AppError(
+        result.error?.code ?? 'WORKSPACE_ERROR',
+        result.error?.message ?? 'Tool execution failed',
+        result.error?.details,
+        result.status === 'CANCELLED' ? 409 : 400
       );
-      this.dependencies.broker.publish(completedEvent);
-      return result;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const finishedAt = new Date().toISOString();
-      const toolResult: ToolResult = {
-        status: 'FAILED',
-        error: {
-          code: error instanceof AppError ? error.code : 'WORKSPACE_ERROR',
-          message
-        },
-        affectedFiles: [],
-        durationMs: Date.now() - startedTime
-      };
-      const completedEvent = this.dependencies.database.completeToolCall(
-        id,
-        task.id,
-        toolResult,
-        finishedAt,
-        {
-          type: 'tool.completed',
-          timestamp: finishedAt,
-          payload: { toolName, error: message }
-        }
-      );
-      this.dependencies.broker.publish(completedEvent);
-      throw error;
     }
+    return result.output as T;
   }
 
   private makeMockPlan(goal: string): TaskPlan {
@@ -324,6 +302,24 @@ export class HarnessRunner {
     if (Array.isArray(value)) return { count: value.length, items: value.slice(0, 20) };
     if (typeof value === 'string') return value.slice(0, 1000);
     return value;
+  }
+
+  private safeArguments(arguments_: Record<string, unknown>): Record<string, unknown> {
+    return Object.fromEntries(
+      Object.entries(arguments_).map(([key, value]) => {
+        if (key === 'content') {
+          return [
+            key,
+            {
+              omitted: true,
+              bytes: typeof value === 'string' ? Buffer.byteLength(value, 'utf8') : undefined
+            }
+          ];
+        }
+        if (key === 'edits' && Array.isArray(value)) return [key, { count: value.length }];
+        return [key, value];
+      })
+    );
   }
 }
 

@@ -847,6 +847,11 @@ export class WorkspaceManager {
         target
       });
     }
-    await fs.rm(resolvedTarget, { recursive: true, force: true });
+    await fs.rm(resolvedTarget, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 50
+    });
   }
 }

@@ -115,7 +115,7 @@ export interface ToolDefinition {
 export interface ToolResult {
   status: Exclude<ToolCallStatus, 'PENDING' | 'RUNNING'>;
   output?: unknown;
-  error?: { code: ErrorCode; message: string; details?: unknown };
+  error?: { code: ErrorCode; message: string; details?: unknown; retryable?: boolean };
   affectedFiles: string[];
   durationMs: number;
 }

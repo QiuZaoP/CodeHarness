@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { config } from './config.js';
 import { AppError } from './errors.js';
@@ -227,6 +228,15 @@ export class AppDatabase {
   startToolCall(record: ToolCallRecord, event: TaskEventDraft): TaskEvent {
     return this.writeTransaction(() => {
       this.toolCalls.create(record);
+      this.audits.create({
+        id: randomUUID(),
+        taskId: record.taskId,
+        action: 'tool.started',
+        resourceType: 'tool_call',
+        resourceId: record.id,
+        after: { name: record.tool.name, status: record.status },
+        timestamp: record.startedAt
+      });
       return this.events.create({ ...event, taskId: record.taskId });
     });
   }
@@ -240,6 +250,21 @@ export class AppDatabase {
   ): TaskEvent {
     return this.writeTransaction(() => {
       this.toolCalls.complete(toolCallId, taskId, result, finishedAt);
+      this.audits.create({
+        id: randomUUID(),
+        taskId,
+        action: 'tool.completed',
+        resourceType: 'tool_call',
+        resourceId: toolCallId,
+        before: { status: 'RUNNING' },
+        after: {
+          status: result.status,
+          affectedFiles: result.affectedFiles,
+          durationMs: result.durationMs,
+          errorCode: result.error?.code
+        },
+        timestamp: finishedAt
+      });
       return this.events.create({ ...event, taskId });
     });
   }

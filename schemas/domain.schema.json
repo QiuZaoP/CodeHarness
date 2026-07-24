@@ -555,7 +555,8 @@
       "properties": {
         "code": { "$ref": "#/$defs/errorCode" },
         "message": { "type": "string" },
-        "details": true
+        "details": true,
+        "retryable": { "type": "boolean" }
       },
       "additionalProperties": false
     },

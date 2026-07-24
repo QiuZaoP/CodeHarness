@@ -35,6 +35,7 @@ function isValidationError(error: unknown): error is { validation: unknown } {
 export interface AppDependencies {
   database?: AppDatabase;
   workspaceManager?: WorkspaceManager;
+  toolExecutor?: ToolExecutor;
 }
 
 export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
@@ -42,7 +43,7 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
   const database = dependencies.database ?? new AppDatabase();
   const workspaceManager = dependencies.workspaceManager ?? new WorkspaceManager();
   const broker = new EventBroker();
-  const tools = new ToolExecutor(workspaceManager);
+  const tools = dependencies.toolExecutor ?? new ToolExecutor(workspaceManager);
   const harness = new HarnessRunner({ database, broker, workspaceManager, tools });
   const app = Fastify({ logger: { level: config.logLevel } });
 

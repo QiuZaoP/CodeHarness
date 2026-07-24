@@ -43,8 +43,8 @@
 
 - 创建任务 + 基线快照元数据 + `task.created` + 审计。
 - 任务状态/计划/步骤更新 + 相关事件 + 审计。
-- 工具调用开始记录 + `tool.started`。
-- 工具调用完成结果 + `tool.completed`。
+- 工具调用开始记录 + `tool.started` + `tool.started` 审计。
+- 工具调用完成结果 + `tool.completed` + `tool.completed` 审计。
 - 验证结果 + `verification.completed`。
 
 事务提交后才向内存 SSE Broker 发布事件。模型、命令、文件和网络操作不能放入 SQLite 事务。

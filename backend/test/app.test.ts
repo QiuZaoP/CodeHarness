@@ -65,6 +65,12 @@ describe('backend API', () => {
     ]);
     expect(db.getToolCalls(task.id)).toHaveLength(3);
     expect(db.getToolCalls(task.id).every((call) => call.status === 'SUCCEEDED')).toBe(true);
+    for (const call of db.getToolCalls(task.id)) {
+      expect(db.getAuditRecords('tool_call', call.id).map(({ action }) => action)).toEqual([
+        'tool.started',
+        'tool.completed'
+      ]);
+    }
     expect(db.getVerificationResults(task.id)).toEqual([
       expect.objectContaining({ command: 'node --version', status: 'PASSED' })
     ]);
