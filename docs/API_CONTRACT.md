@@ -25,10 +25,14 @@
 | `POST` | `/api/v1/tasks/{taskId}/run`      | 运行任务       |
 | `GET`  | `/api/v1/tasks/{taskId}/events`   | 订阅任务事件   |
 | `POST` | `/api/v1/tasks/{taskId}/pause`    | 暂停任务       |
+| `POST` | `/api/v1/tasks/{taskId}/resume`   | 恢复任务       |
 | `POST` | `/api/v1/tasks/{taskId}/cancel`   | 取消任务       |
+| `POST` | `/api/v1/tasks/{taskId}/apply`    | 确认应用       |
 | `POST` | `/api/v1/tasks/{taskId}/rollback` | 回滚任务工作区 |
 
-消息、搜索、变更审批、应用及验证资源已经在领域 Schema 中预留 DTO，但在对应持久化、索引、工具和安全阶段完成前不发布空实现路由。前端旧的 `/api/*` 调用需要迁移到这里列出的 `/api/v1/*` 路径。
+消息、搜索、文件级变更审批及验证资源已经在领域 Schema 中预留 DTO，但在对应持久化、
+索引、工具和安全阶段完成前不发布空实现路由。前端旧的 `/api/*` 调用需要迁移到这里列出
+的 `/api/v1/*` 路径。
 
 `sourcePath` 和 `workspacePath` 是后端内部路径。创建项目时允许提交 `sourcePath`，但项目和任务响应不会回传这两个字段。
 
@@ -36,11 +40,18 @@
 
 控制接口的当前语义：
 
-- `run` 只接受尚未运行的 `CREATED` 任务；重复或冲突调用返回 `409 CONFLICT`。
-- `pause` 只允许从执行/验证相关状态进入 `PAUSED`；恢复目标需要在生命周期阶段持久化后再发布 `resume` 路由。
+- `run` 只接受 `CREATED`，原子获取租约后返回 `202 Accepted`；任务在后台执行，重复或
+  冲突调用返回 `409 CONFLICT`。
+- `pause` 只接受已经获得租约的运行任务；它取消当前操作、进入 `PAUSED` 并持久化恢复
+  目标。
+- `resume` 只接受带恢复目标的 `PAUSED`，获取新租约后返回 `202 Accepted`。
 - `cancel` 将允许的非终态任务转为终态 `CANCELLED`；重复取消返回 `409 CONFLICT`。
+- `apply` 当前只把 `READY_FOR_REVIEW` 转为 `APPLIED`，不把 Diff 写回项目源目录；文件级
+  审批和目标仓库应用属于后续交付阶段。
 - `rollback` 使用数据库中的基线快照哈希验证并恢复当前任务的独立工作区，成功后将任务转为
   `CANCELLED`；不会修改项目源目录或删除基线快照。
+
+租约、协作式控制、恢复目标和服务重启规则见 [LIFECYCLE.md](LIFECYCLE.md)。
 
 ## 任务状态与事件
 
@@ -55,9 +66,9 @@ CREATED -> PRECHECKING -> PLANNING -> EXECUTING
 
 | 当前状态                         | 允许的后继状态                                                            |
 | -------------------------------- | ------------------------------------------------------------------------- |
-| `CREATED`                        | `PRECHECKING`、`CANCELLED`                                                |
-| `PRECHECKING`                    | `PLANNING`、`WAITING_USER`、`FAILED`、`CANCELLED`                         |
-| `PLANNING`                       | `EXECUTING`、`WAITING_USER`、`FAILED`、`CANCELLED`                        |
+| `CREATED`                        | `PRECHECKING`、`PAUSED`、`CANCELLED`                                      |
+| `PRECHECKING`                    | `PLANNING`、`WAITING_USER`、`PAUSED`、`FAILED`、`CANCELLED`               |
+| `PLANNING`                       | `EXECUTING`、`WAITING_USER`、`PAUSED`、`FAILED`、`CANCELLED`              |
 | `EXECUTING`                      | `EXECUTING`、`VERIFYING`、`WAITING_USER`、`PAUSED`、`FAILED`、`CANCELLED` |
 | `VERIFYING`                      | `EXECUTING`、`READY_FOR_REVIEW`、`PAUSED`、`FAILED`、`CANCELLED`          |
 | `READY_FOR_REVIEW`               | `APPLIED`、`EXECUTING`、`CANCELLED`                                       |

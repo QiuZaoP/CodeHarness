@@ -139,13 +139,15 @@ const expectedPaths = [
   '/api/v1/tasks/{taskId}/run',
   '/api/v1/tasks/{taskId}/events',
   '/api/v1/tasks/{taskId}/pause',
+  '/api/v1/tasks/{taskId}/resume',
   '/api/v1/tasks/{taskId}/cancel',
+  '/api/v1/tasks/{taskId}/apply',
   '/api/v1/tasks/{taskId}/rollback'
 ];
 const actualPaths = Object.keys(objectAt(openapi.paths, 'openapi.paths'));
 if (JSON.stringify(actualPaths) !== JSON.stringify(expectedPaths)) {
   throw new Error(
-    `OpenAPI paths do not match the implemented phase-1 API\nactual=${JSON.stringify(actualPaths)}`
+    `OpenAPI paths do not match the implemented API\nactual=${JSON.stringify(actualPaths)}`
   );
 }
 
@@ -160,7 +162,9 @@ const expectedMethods: Record<string, readonly string[]> = {
   '/api/v1/tasks/{taskId}/run': ['post'],
   '/api/v1/tasks/{taskId}/events': ['get'],
   '/api/v1/tasks/{taskId}/pause': ['post'],
+  '/api/v1/tasks/{taskId}/resume': ['post'],
   '/api/v1/tasks/{taskId}/cancel': ['post'],
+  '/api/v1/tasks/{taskId}/apply': ['post'],
   '/api/v1/tasks/{taskId}/rollback': ['post']
 };
 const openapiPaths = objectAt(openapi.paths, 'openapi.paths');

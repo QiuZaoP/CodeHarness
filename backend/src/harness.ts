@@ -1,8 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { AppError } from './errors.js';
 import type { EventBroker } from './broker.js';
+import type { CommandOutput } from './command-runner.js';
+import { config } from './config.js';
 import type { AppDatabase, TaskEventDraft } from './db.js';
-import { assertTransition } from './state-machine.js';
+import { AppError } from './errors.js';
+import type { ToolRegistrationPort } from './ports/tool-registry.js';
+import { taskStateMachine } from './state-machine.js';
 import type {
   StoredTask,
   TaskPlan,
@@ -11,16 +14,20 @@ import type {
   VerificationResult,
   WorkspaceSnapshot
 } from './types.js';
-import type { CommandOutput } from './command-runner.js';
-import type { ToolExecutor } from './tools.js';
 import type { WorkspaceManager } from './workspace.js';
-import { config } from './config.js';
 
 export interface HarnessDependencies {
   database: AppDatabase;
   broker: EventBroker;
   workspaceManager: WorkspaceManager;
-  tools: ToolExecutor;
+  tools: ToolRegistrationPort;
+}
+
+interface LifecyclePatch {
+  plan?: TaskPlan | null;
+  stopReason?: string | null;
+  resumeStatus?: StoredTask['resumeStatus'] | null;
+  controlRequest?: StoredTask['controlRequest'] | null;
 }
 
 export class HarnessRunner {
@@ -75,63 +82,76 @@ export class HarnessRunner {
   async run(taskId: string, signal?: AbortSignal): Promise<StoredTask> {
     let task = this.requireTask(taskId);
     try {
-      task = this.transition(task, 'PRECHECKING');
-      const plan = this.makeMockPlan(task.goal);
-      task = this.transition(task, 'PLANNING', { plan }, [
-        { type: 'task.plan.updated', payload: { plan } }
-      ]);
-      task = this.transition(task, 'EXECUTING');
-
-      const files = await this.callTool<string[]>(
-        task,
-        { name: 'list_files', arguments: { path: '.' } },
-        signal
-      );
-      const readme = files.find((file) => file.toLowerCase().endsWith('readme.md'));
-      if (readme)
-        await this.callTool(task, { name: 'read_file', arguments: { path: readme } }, signal);
-
-      task = this.transition(task, 'VERIFYING');
-      const verification = await this.callTool<CommandOutput>(
-        task,
-        {
-          name: 'run_command',
-          arguments: { executable: 'node', args: ['--version'] }
-        },
-        signal
-      );
-      const verificationResult: VerificationResult = {
-        id: randomUUID(),
-        taskId: task.id,
-        command: 'node --version',
-        status: verification.code === 0 ? 'PASSED' : 'FAILED',
-        exitCode: verification.code,
-        outputSummary: `${verification.stdout}\n${verification.stderr}`.trim().slice(0, 4000),
-        failureCategory: verification.code === 0 ? undefined : 'ENVIRONMENT',
-        createdAt: new Date().toISOString()
-      };
-      const verificationEvent = this.dependencies.database.recordVerification(verificationResult, {
-        type: 'verification.completed',
-        timestamp: verificationResult.createdAt,
-        payload: { verification: verificationResult }
-      });
-      this.dependencies.broker.publish(verificationEvent);
-      if (verification.code !== 0)
-        throw new AppError('WORKSPACE_ERROR', 'Verification command failed', verification);
-      task = this.transition(task, 'READY_FOR_REVIEW', {}, [
-        {
-          type: 'task.completed',
-          payload: { verification: { command: 'node --version', code: verification.code } }
+      if (task.status === 'CREATED') {
+        this.throwIfStopped(task.id, signal);
+        task = this.transition(task, 'PRECHECKING');
+      }
+      if (task.status === 'PRECHECKING') {
+        this.throwIfStopped(task.id, signal);
+        const plan = this.makeMockPlan(task.goal);
+        task = this.transition(task, 'PLANNING', { plan }, [
+          { type: 'task.plan.updated', payload: { plan } }
+        ]);
+      }
+      if (task.status === 'PLANNING') {
+        this.throwIfStopped(task.id, signal);
+        const plan = task.plan ?? this.makeMockPlan(task.goal);
+        task = this.transition(
+          task,
+          'EXECUTING',
+          task.plan ? {} : { plan },
+          task.plan ? [] : [{ type: 'task.plan.updated', payload: { plan } }]
+        );
+      }
+      if (task.status === 'EXECUTING') {
+        this.throwIfStopped(task.id, signal);
+        const files = await this.callTool<string[]>(
+          task,
+          { name: 'list_files', arguments: { path: '.' } },
+          signal
+        );
+        this.throwIfStopped(task.id, signal);
+        const readme = files.find((file) => file.toLowerCase().endsWith('readme.md'));
+        if (readme) {
+          await this.callTool(task, { name: 'read_file', arguments: { path: readme } }, signal);
         }
-      ]);
+        this.throwIfStopped(task.id, signal);
+        task = this.transition(this.requireTask(task.id), 'VERIFYING');
+      }
+      if (task.status === 'VERIFYING') {
+        this.throwIfStopped(task.id, signal);
+        task = await this.verify(task, signal);
+      }
+      if (task.status !== 'READY_FOR_REVIEW') {
+        throw new AppError(
+          'CONFLICT',
+          `Task cannot run from ${task.status}`,
+          { taskId, status: task.status },
+          409
+        );
+      }
       return task;
     } catch (error) {
       const current = this.requireTask(taskId);
-      if (current.status !== 'FAILED' && current.status !== 'CANCELLED') {
+      const control = this.abortedControl(signal) ?? current.controlRequest;
+      if (control === 'PAUSE' && !taskStateMachine.isTerminal(current.status)) {
+        return this.pauseInterrupted(taskId, 'Paused by user');
+      }
+      if (control === 'CANCEL' && !taskStateMachine.isTerminal(current.status)) {
+        return this.cancel(taskId);
+      }
+      if (
+        !taskStateMachine.isTerminal(current.status) &&
+        current.status !== 'PAUSED' &&
+        current.status !== 'WAITING_USER'
+      ) {
         const stopReason = error instanceof Error ? error.message : String(error);
-        task = this.transition(current, 'FAILED', { stopReason }, [
-          { type: 'task.failed', payload: { message: stopReason } }
-        ]);
+        this.transition(
+          current,
+          'FAILED',
+          { stopReason, resumeStatus: null, controlRequest: null },
+          [{ type: 'task.failed', payload: { message: stopReason } }]
+        );
       }
       throw error;
     }
@@ -141,12 +161,54 @@ export class HarnessRunner {
     return this.requireTask(taskId);
   }
 
-  pause(taskId: string): StoredTask {
-    return this.changeStatus(taskId, 'PAUSED');
+  pauseInterrupted(taskId: string, reason: string): StoredTask {
+    const task = this.requireTask(taskId);
+    const resumeStatus = taskStateMachine.pauseResumeTarget(task.status);
+    return this.transition(
+      task,
+      'PAUSED',
+      { stopReason: reason, resumeStatus, controlRequest: null },
+      [{ type: 'task.paused', payload: { status: 'PAUSED' } }]
+    );
   }
 
-  cancel(taskId: string): StoredTask {
-    return this.changeStatus(taskId, 'CANCELLED', 'Cancelled by user');
+  resume(taskId: string): StoredTask {
+    const task = this.requireTask(taskId);
+    if (task.status !== 'PAUSED' || !task.resumeStatus) {
+      throw new AppError(
+        'CONFLICT',
+        'Task does not have a resumable checkpoint',
+        { taskId, status: task.status },
+        409
+      );
+    }
+    const status = task.resumeStatus;
+    return this.transition(
+      task,
+      status,
+      { stopReason: null, resumeStatus: null, controlRequest: null },
+      [{ type: 'task.resumed', payload: { status } }]
+    );
+  }
+
+  cancel(taskId: string, reason = 'Cancelled by user'): StoredTask {
+    const task = this.requireTask(taskId);
+    return this.transition(
+      task,
+      'CANCELLED',
+      { stopReason: reason, resumeStatus: null, controlRequest: null },
+      [{ type: 'task.cancelled', payload: { reason } }]
+    );
+  }
+
+  apply(taskId: string): StoredTask {
+    const task = this.requireTask(taskId);
+    return this.transition(
+      task,
+      'APPLIED',
+      { stopReason: null, resumeStatus: null, controlRequest: null },
+      [{ type: 'task.applied', payload: { changeCount: 0 } }]
+    );
   }
 
   async rollback(taskId: string): Promise<StoredTask> {
@@ -156,7 +218,7 @@ export class HarnessRunner {
       .find((snapshot) => snapshot.kind === 'BASELINE');
     if (!baseline) throw new AppError('WORKSPACE_ERROR', 'Baseline snapshot does not exist');
     await this.dependencies.workspaceManager.rollback(task.id, task.workspacePath, baseline);
-    return this.changeStatus(taskId, 'CANCELLED', 'Workspace rolled back by user');
+    return this.cancel(taskId, 'Workspace rolled back by user');
   }
 
   async checkpoint(
@@ -178,30 +240,19 @@ export class HarnessRunner {
     }
   }
 
-  private changeStatus(taskId: string, status: TaskStatus, stopReason?: string): StoredTask {
-    const task = this.requireTask(taskId);
-    const events: Array<Omit<TaskEventDraft, 'timestamp'>> = [];
-    if (status === 'PAUSED') events.push({ type: 'task.paused', payload: { status } });
-    if (status === 'CANCELLED') {
-      events.push({
-        type: 'task.cancelled',
-        payload: { reason: stopReason ?? 'Cancelled by user' }
-      });
-    }
-    return this.transition(task, status, { stopReason }, events);
-  }
-
   private transition(
     task: StoredTask,
     status: TaskStatus,
-    patch: Partial<Pick<StoredTask, 'plan' | 'stopReason'>> = {},
+    patch: LifecyclePatch = {},
     additionalEvents: Array<Omit<TaskEventDraft, 'timestamp'>> = []
   ): StoredTask {
-    assertTransition(task.status, status);
+    taskStateMachine.assertTransition(task.status, status);
     const timestamp = new Date().toISOString();
     const taskPatch: Parameters<AppDatabase['transitionTask']>[0]['patch'] = { status };
     if (Object.hasOwn(patch, 'plan')) taskPatch.plan = patch.plan;
     if (Object.hasOwn(patch, 'stopReason')) taskPatch.stopReason = patch.stopReason;
+    if (Object.hasOwn(patch, 'resumeStatus')) taskPatch.resumeStatus = patch.resumeStatus;
+    if (Object.hasOwn(patch, 'controlRequest')) taskPatch.controlRequest = patch.controlRequest;
     const result = this.dependencies.database.transitionTask({
       taskId: task.id,
       expectedVersion: task.version,
@@ -276,6 +327,43 @@ export class HarnessRunner {
     return result.output as T;
   }
 
+  private async verify(task: StoredTask, signal?: AbortSignal): Promise<StoredTask> {
+    const verification = await this.callTool<CommandOutput>(
+      task,
+      {
+        name: 'run_command',
+        arguments: { executable: 'node', args: ['--version'] }
+      },
+      signal
+    );
+    this.throwIfStopped(task.id, signal);
+    const verificationResult: VerificationResult = {
+      id: randomUUID(),
+      taskId: task.id,
+      command: 'node --version',
+      status: verification.code === 0 ? 'PASSED' : 'FAILED',
+      exitCode: verification.code,
+      outputSummary: `${verification.stdout}\n${verification.stderr}`.trim().slice(0, 4000),
+      failureCategory: verification.code === 0 ? undefined : 'ENVIRONMENT',
+      createdAt: new Date().toISOString()
+    };
+    const verificationEvent = this.dependencies.database.recordVerification(verificationResult, {
+      type: 'verification.completed',
+      timestamp: verificationResult.createdAt,
+      payload: { verification: verificationResult }
+    });
+    this.dependencies.broker.publish(verificationEvent);
+    if (verification.code !== 0) {
+      throw new AppError('WORKSPACE_ERROR', 'Verification command failed', verification);
+    }
+    return this.transition(this.requireTask(task.id), 'READY_FOR_REVIEW', {}, [
+      {
+        type: 'task.completed',
+        payload: { verification: { command: 'node --version', code: verification.code } }
+      }
+    ]);
+  }
+
   private makeMockPlan(goal: string): TaskPlan {
     return {
       goal,
@@ -296,6 +384,30 @@ export class HarnessRunner {
 
   private publishEvents(events: readonly Parameters<EventBroker['publish']>[0][]): void {
     events.forEach((event) => this.dependencies.broker.publish(event));
+  }
+
+  private throwIfStopped(taskId: string, signal?: AbortSignal): void {
+    if (signal?.aborted) {
+      throw (
+        signal.reason ??
+        new AppError('TASK_CANCELLED', 'Task execution was cancelled', undefined, 409)
+      );
+    }
+    const control = this.dependencies.database.getTask(taskId)?.controlRequest;
+    if (control) {
+      throw new AppError('TASK_CANCELLED', 'Task control was requested', { control }, 409);
+    }
+  }
+
+  private abortedControl(signal?: AbortSignal): StoredTask['controlRequest'] | undefined {
+    if (!signal?.aborted || !(signal.reason instanceof AppError)) return undefined;
+    const details =
+      typeof signal.reason.details === 'object' && signal.reason.details !== null
+        ? signal.reason.details
+        : undefined;
+    if (!details || !('control' in details)) return undefined;
+    const control = (details as { control?: unknown }).control;
+    return control === 'PAUSE' || control === 'CANCEL' ? control : undefined;
   }
 
   private summary(value: unknown): unknown {

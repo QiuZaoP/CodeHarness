@@ -85,6 +85,16 @@ export interface StoredTask {
   createdAt: string;
   updatedAt: string;
   stopReason?: string;
+  resumeStatus?: Extract<TaskStatus, 'PLANNING' | 'EXECUTING' | 'VERIFYING'>;
+  controlRequest?: 'PAUSE' | 'CANCEL';
+}
+
+export interface TaskLease {
+  taskId: string;
+  ownerId: string;
+  acquiredAt: string;
+  expiresAt: string;
+  version: number;
 }
 
 export interface TaskEvent {

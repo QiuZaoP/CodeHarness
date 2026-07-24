@@ -2,7 +2,7 @@
 
 ## 当前版本
 
-- 数据库 schema version：`3`
+- 数据库 schema version：`4`
 - 迁移记录：`schema_migrations`
 - SQLite `PRAGMA user_version` 与最新迁移版本保持一致
 - 启动设置：`foreign_keys = ON`、WAL、`busy_timeout = 5000`
@@ -14,6 +14,7 @@
 1. `initial-project-session-task-events`
 2. `runtime-persistence-and-optimistic-locking`
 3. `project-source-metadata`
+4. `resumable-task-lifecycle`
 
 没有 `schema_migrations` 的阶段 1 数据库会先登记兼容的初始迁移，再增加版本列和运行记录表；项目、会话、任务及历史事件会保留。
 
@@ -32,7 +33,7 @@
 | `file_changes`         | 文件 Diff、审阅决定和版本        |
 | `verification_results` | 验证命令与归因结果               |
 | `audit_records`        | 资源变更前后摘要                 |
-| `task_leases`          | 后续调度阶段使用的任务执行租约   |
+| `task_leases`          | 单 Runner 抢占、续租和过期恢复   |
 | `schema_migrations`    | 已应用迁移、名称和 checksum      |
 
 数据库访问通过 `backend/src/database/repositories/` 封装。API 和 Harness 不直接拼装 SQL。
@@ -46,6 +47,8 @@
 - 工具调用开始记录 + `tool.started` + `tool.started` 审计。
 - 工具调用完成结果 + `tool.completed` + `tool.completed` 审计。
 - 验证结果 + `verification.completed`。
+- 控制请求 + `task.control_requested` 审计。
+- 状态恢复 + 状态事件 + 审计。
 
 事务提交后才向内存 SSE Broker 发布事件。模型、命令、文件和网络操作不能放入 SQLite 事务。
 
@@ -57,7 +60,8 @@
 
 ## 当前边界
 
-- `task_leases` 已建表，但租约获取、续期和恢复属于任务生命周期阶段。
+- `task_leases` 已接入原子抢占、续租、owner 释放和过期恢复；具体语义见
+  [LIFECYCLE.md](LIFECYCLE.md)。
 - 项目记录包含源目录 manifest 摘要和 Git 元数据；完整 manifest 保存在受管项目目录。
 - 工作区已经按任务隔离，快照元数据持久化；文件布局、校验和回滚规则见
   [WORKSPACES.md](WORKSPACES.md)。

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertTransition, canTransition } from '../src/state-machine.js';
+import { assertTransition, canTransition, taskStateMachine } from '../src/state-machine.js';
 
 describe('task state machine', () => {
   it('allows the standard lifecycle', () => {
@@ -11,6 +11,9 @@ describe('task state machine', () => {
     expect(canTransition('VERIFYING', 'PAUSED')).toBe(true);
     expect(canTransition('PAUSED', 'VERIFYING')).toBe(true);
     expect(canTransition('READY_FOR_REVIEW', 'APPLIED')).toBe(true);
+    expect(taskStateMachine.pauseResumeTarget('PRECHECKING')).toBe('PLANNING');
+    expect(taskStateMachine.pauseResumeTarget('EXECUTING')).toBe('EXECUTING');
+    expect(taskStateMachine.isTerminal('CANCELLED')).toBe(true);
   });
 
   it('rejects terminal state transitions', () => {

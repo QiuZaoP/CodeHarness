@@ -19,6 +19,8 @@ export const config = {
   maxReadFileBytes: intEnv('MAX_READ_FILE_BYTES', 1024 * 1024),
   maxToolArgumentBytes: intEnv('MAX_TOOL_ARGUMENT_BYTES', 256 * 1024),
   maxToolOutputBytes: intEnv('MAX_TOOL_OUTPUT_BYTES', 1024 * 1024),
+  taskLeaseTtlMs: intEnv('TASK_LEASE_TTL_MS', 15_000),
+  taskControlPollMs: intEnv('TASK_CONTROL_POLL_MS', 250),
   maxImportFiles: intEnv('MAX_IMPORT_FILES', 20_000),
   maxImportBytes: intEnv('MAX_IMPORT_BYTES', 512 * 1024 * 1024),
   maxFileBytes: intEnv('MAX_FILE_BYTES', 5 * 1024 * 1024),

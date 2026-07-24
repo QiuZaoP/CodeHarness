@@ -63,8 +63,8 @@ describe('database migrations and repositories', () => {
     const file = await databasePath('codeharness-schema-');
     const database = new AppDatabase(file);
     try {
-      expect(database.getSchemaVersion()).toBe(3);
-      expect(database.getAppliedMigrations().map(({ version }) => version)).toEqual([1, 2, 3]);
+      expect(database.getSchemaVersion()).toBe(4);
+      expect(database.getAppliedMigrations().map(({ version }) => version)).toEqual([1, 2, 3, 4]);
       expect(database.connection.pragma('foreign_keys', { simple: true })).toBe(1);
       const tables = database.connection
         .prepare(
@@ -172,7 +172,7 @@ describe('database migrations and repositories', () => {
 
     const upgraded = new AppDatabase(file);
     try {
-      expect(upgraded.getSchemaVersion()).toBe(3);
+      expect(upgraded.getSchemaVersion()).toBe(4);
       expect(upgraded.getTask(taskId)).toMatchObject({
         id: taskId,
         goal: 'Keep this task',

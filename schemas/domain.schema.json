@@ -242,6 +242,18 @@
       },
       "additionalProperties": false
     },
+    "taskLease": {
+      "type": "object",
+      "required": ["taskId", "ownerId", "acquiredAt", "expiresAt", "version"],
+      "properties": {
+        "taskId": { "$ref": "#/$defs/id" },
+        "ownerId": { "$ref": "#/$defs/id" },
+        "acquiredAt": { "$ref": "#/$defs/timestamp" },
+        "expiresAt": { "$ref": "#/$defs/timestamp" },
+        "version": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
     "taskRecord": {
       "type": "object",
       "required": [
@@ -266,7 +278,12 @@
         "version": { "type": "integer", "minimum": 1 },
         "createdAt": { "$ref": "#/$defs/timestamp" },
         "updatedAt": { "$ref": "#/$defs/timestamp" },
-        "stopReason": { "type": "string" }
+        "stopReason": { "type": "string" },
+        "resumeStatus": {
+          "type": "string",
+          "enum": ["PLANNING", "EXECUTING", "VERIFYING"]
+        },
+        "controlRequest": { "type": "string", "enum": ["PAUSE", "CANCEL"] }
       },
       "additionalProperties": false
     },

@@ -19,12 +19,15 @@ import { ProjectRepository } from './database/repositories/project-repository.js
 import { SessionRepository } from './database/repositories/session-repository.js';
 import { SnapshotRepository } from './database/repositories/snapshot-repository.js';
 import { TaskRepository, type TaskPatch } from './database/repositories/task-repository.js';
+import { TaskLeaseRepository } from './database/repositories/task-lease-repository.js';
 import { TaskStepRepository } from './database/repositories/task-step-repository.js';
 import { ToolCallRepository } from './database/repositories/tool-call-repository.js';
 import { VerificationRepository } from './database/repositories/verification-repository.js';
 import type {
   Message,
   StoredTask,
+  TaskLease,
+  TaskStatus,
   TaskEvent,
   ToolCallRecord,
   ToolResult,
@@ -62,6 +65,7 @@ export class AppDatabase {
   private readonly events: EventRepository;
   private readonly audits: AuditRepository;
   private readonly taskSteps: TaskStepRepository;
+  private readonly taskLeases: TaskLeaseRepository;
   private readonly toolCalls: ToolCallRepository;
   private readonly verifications: VerificationRepository;
   private readonly snapshots: SnapshotRepository;
@@ -84,6 +88,7 @@ export class AppDatabase {
     this.events = new EventRepository(this.connection);
     this.audits = new AuditRepository(this.connection);
     this.taskSteps = new TaskStepRepository(this.connection);
+    this.taskLeases = new TaskLeaseRepository(this.connection);
     this.toolCalls = new ToolCallRepository(this.connection);
     this.verifications = new VerificationRepository(this.connection);
     this.snapshots = new SnapshotRepository(this.connection);
@@ -158,6 +163,67 @@ export class AppDatabase {
     return this.tasks.findById(id);
   }
 
+  getTasksByStatus(statuses: readonly TaskStatus[]): StoredTask[] {
+    return this.tasks.listByStatuses(statuses);
+  }
+
+  acquireTaskLease(
+    taskId: string,
+    ownerId: string,
+    acquiredAt: string,
+    expiresAt: string
+  ): TaskLease | undefined {
+    return this.writeTransaction(() => {
+      if (!this.tasks.findById(taskId)) {
+        throw new AppError('NOT_FOUND', 'Task not found', { taskId }, 404);
+      }
+      return this.taskLeases.acquire(taskId, ownerId, acquiredAt, expiresAt);
+    });
+  }
+
+  renewTaskLease(
+    taskId: string,
+    ownerId: string,
+    renewedAt: string,
+    expiresAt: string
+  ): TaskLease | undefined {
+    return this.writeTransaction(() =>
+      this.taskLeases.renew(taskId, ownerId, renewedAt, expiresAt)
+    );
+  }
+
+  getTaskLease(taskId: string): TaskLease | undefined {
+    return this.taskLeases.find(taskId);
+  }
+
+  requestTaskControl(
+    taskId: string,
+    controlRequest: NonNullable<StoredTask['controlRequest']>,
+    timestamp: string
+  ): StoredTask {
+    const task = this.tasks.findById(taskId);
+    if (!task) throw new AppError('NOT_FOUND', 'Task not found', { taskId }, 404);
+    return this.transitionTask({
+      taskId,
+      expectedVersion: task.version,
+      patch: { controlRequest },
+      events: [],
+      audit: {
+        id: randomUUID(),
+        action: 'task.control_requested',
+        timestamp
+      }
+    }).task;
+  }
+
+  releaseTaskLease(taskId: string, ownerId: string): boolean {
+    return this.writeTransaction(() => this.taskLeases.release(taskId, ownerId));
+  }
+
+  releaseExpiredTaskLease(taskId: string, now: string): boolean {
+    return this.writeTransaction(() => this.taskLeases.releaseExpired(taskId, now));
+  }
+
   getWorkspaceSnapshots(taskId: string): WorkspaceSnapshot[] {
     return this.snapshots.listByTask(taskId);
   }
@@ -199,13 +265,17 @@ export class AppDatabase {
           status: before.status,
           version: before.version,
           plan: before.plan,
-          stopReason: before.stopReason
+          stopReason: before.stopReason,
+          resumeStatus: before.resumeStatus,
+          controlRequest: before.controlRequest
         },
         after: {
           status: task.status,
           version: task.version,
           plan: task.plan,
-          stopReason: task.stopReason
+          stopReason: task.stopReason,
+          resumeStatus: task.resumeStatus,
+          controlRequest: task.controlRequest
         },
         timestamp: input.audit.timestamp
       });

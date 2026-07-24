@@ -10,6 +10,8 @@ import { errorBody, AppError } from './errors.js';
 import { EventBroker } from './broker.js';
 import { HarnessRunner } from './harness.js';
 import { ToolExecutor } from './tools.js';
+import type { ToolRegistrationPort } from './ports/tool-registry.js';
+import { TaskScheduler } from './task-scheduler.js';
 import { WorkspaceManager } from './workspace.js';
 import { domainRef, domainSchema, errorResponses } from './api/contract-schemas.js';
 import type { TaskEvent } from './types.js';
@@ -35,7 +37,7 @@ function isValidationError(error: unknown): error is { validation: unknown } {
 export interface AppDependencies {
   database?: AppDatabase;
   workspaceManager?: WorkspaceManager;
-  toolExecutor?: ToolExecutor;
+  toolExecutor?: ToolRegistrationPort;
 }
 
 export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
@@ -46,8 +48,16 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
   const tools = dependencies.toolExecutor ?? new ToolExecutor(workspaceManager);
   const harness = new HarnessRunner({ database, broker, workspaceManager, tools });
   const app = Fastify({ logger: { level: config.logLevel } });
+  const scheduler = new TaskScheduler(database, harness, {
+    onBackgroundError: (error) => app.log.error(error)
+  });
+  scheduler.recoverInterrupted();
+  scheduler.startRecoveryMonitor();
 
-  if (ownsDatabase) app.addHook('onClose', async () => database.close());
+  app.addHook('onClose', async () => {
+    await scheduler.shutdown();
+    if (ownsDatabase) database.close();
+  });
 
   app.addSchema(domainSchema);
   app.register(cors, { origin: true });
@@ -169,12 +179,12 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
     {
       schema: {
         params: domainRef('taskParams'),
-        response: { 200: domainRef('task'), ...errorResponses }
+        response: { 202: domainRef('task'), ...errorResponses }
       }
     },
     async (request, reply) => {
-      const task = await harness.run(request.params.taskId);
-      return reply.send(task);
+      const task = scheduler.start(request.params.taskId);
+      return reply.code(202).send(task);
     }
   );
 
@@ -186,7 +196,20 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
         response: { 200: domainRef('task'), ...errorResponses }
       }
     },
-    async (request) => harness.pause(request.params.taskId)
+    async (request) => scheduler.pause(request.params.taskId)
+  );
+  app.post<{ Params: { taskId: string } }>(
+    '/api/v1/tasks/:taskId/resume',
+    {
+      schema: {
+        params: domainRef('taskParams'),
+        response: { 202: domainRef('task'), ...errorResponses }
+      }
+    },
+    async (request, reply) => {
+      const task = scheduler.resume(request.params.taskId);
+      return reply.code(202).send(task);
+    }
   );
   app.post<{ Params: { taskId: string } }>(
     '/api/v1/tasks/:taskId/cancel',
@@ -196,7 +219,17 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
         response: { 200: domainRef('task'), ...errorResponses }
       }
     },
-    async (request) => harness.cancel(request.params.taskId)
+    async (request) => scheduler.cancel(request.params.taskId)
+  );
+  app.post<{ Params: { taskId: string } }>(
+    '/api/v1/tasks/:taskId/apply',
+    {
+      schema: {
+        params: domainRef('taskParams'),
+        response: { 200: domainRef('task'), ...errorResponses }
+      }
+    },
+    async (request) => scheduler.apply(request.params.taskId)
   );
   app.post<{ Params: { taskId: string } }>(
     '/api/v1/tasks/:taskId/rollback',
@@ -206,7 +239,7 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
         response: { 200: domainRef('task'), ...errorResponses }
       }
     },
-    async (request) => harness.rollback(request.params.taskId)
+    async (request) => scheduler.rollback(request.params.taskId)
   );
 
   app.get<{ Params: { taskId: string }; Querystring: { after?: number } }>(

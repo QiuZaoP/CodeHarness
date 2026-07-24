@@ -153,8 +153,8 @@
         "operationId": "runTask",
         "parameters": [{ "$ref": "#/components/parameters/TaskId" }],
         "responses": {
-          "200": {
-            "description": "Task run result",
+          "202": {
+            "description": "Task accepted for background execution",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Task" }
@@ -219,6 +219,25 @@
         }
       }
     },
+    "/api/v1/tasks/{taskId}/resume": {
+      "post": {
+        "operationId": "resumeTask",
+        "parameters": [{ "$ref": "#/components/parameters/TaskId" }],
+        "responses": {
+          "202": {
+            "description": "Task checkpoint accepted for background continuation",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "409": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
     "/api/v1/tasks/{taskId}/cancel": {
       "post": {
         "operationId": "cancelTask",
@@ -226,6 +245,25 @@
         "responses": {
           "200": {
             "description": "Task cancelled",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "409": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}/apply": {
+      "post": {
+        "operationId": "applyTask",
+        "parameters": [{ "$ref": "#/components/parameters/TaskId" }],
+        "responses": {
+          "200": {
+            "description": "Reviewed task marked as applied",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Task" }

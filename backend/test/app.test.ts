@@ -12,6 +12,20 @@ afterEach(async () => {
   for (const resource of resources.splice(0).reverse()) await resource.close();
 });
 
+async function waitForTask(
+  database: AppDatabase,
+  taskId: string,
+  status: string,
+  timeoutMs = 5_000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (database.getTask(taskId)?.status === status) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Task ${taskId} did not reach ${status}`);
+}
+
 describe('backend API', () => {
   it('serves health and runs a task through the mock harness', async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'codeharness-'));
@@ -55,8 +69,9 @@ describe('backend API', () => {
     expect(task.workspacePath).toBeUndefined();
 
     const runResponse = await app.inject({ method: 'POST', url: `/api/v1/tasks/${task.id}/run` });
-    expect(runResponse.statusCode).toBe(200);
-    expect(runResponse.json<{ status: string }>().status).toBe('READY_FOR_REVIEW');
+    expect(runResponse.statusCode).toBe(202);
+    expect(runResponse.json<{ status: string }>().status).toBe('CREATED');
+    await waitForTask(db, task.id, 'READY_FOR_REVIEW');
     expect(db.getEvents(task.id).map((event) => event.type)).toContain('tool.completed');
     expect(db.getEvents(task.id).every((event) => event.schemaVersion === '1.0.0')).toBe(true);
     expect(db.getTask(task.id)?.plan?.steps).toHaveLength(2);

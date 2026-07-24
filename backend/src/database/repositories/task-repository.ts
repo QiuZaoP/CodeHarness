@@ -7,6 +7,8 @@ export interface TaskPatch {
   status?: TaskStatus;
   plan?: TaskPlan | null;
   stopReason?: string | null;
+  resumeStatus?: StoredTask['resumeStatus'] | null;
+  controlRequest?: StoredTask['controlRequest'] | null;
 }
 
 interface TaskRow {
@@ -18,6 +20,8 @@ interface TaskRow {
   planJson: string | null;
   workspacePath: string;
   stopReason: string | null;
+  resumeStatus: StoredTask['resumeStatus'] | null;
+  controlRequest: StoredTask['controlRequest'] | null;
   version: number;
   createdAt: string;
   updatedAt: string;
@@ -29,7 +33,7 @@ export class TaskRepository {
   create(task: StoredTask): void {
     this.database
       .prepare(
-        'INSERT INTO tasks (id, session_id, project_id, goal, status, plan_json, workspace_path, stop_reason, version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO tasks (id, session_id, project_id, goal, status, plan_json, workspace_path, stop_reason, resume_status, control_request, version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
       )
       .run(
         task.id,
@@ -40,6 +44,8 @@ export class TaskRepository {
         task.plan ? stringifyStoredJson(task.plan, `task ${task.id} plan`) : null,
         task.workspacePath,
         task.stopReason ?? null,
+        task.resumeStatus ?? null,
+        task.controlRequest ?? null,
         task.version,
         task.createdAt,
         task.updatedAt
@@ -49,7 +55,7 @@ export class TaskRepository {
   findById(id: string): StoredTask | undefined {
     const row = this.database
       .prepare(
-        'SELECT id, session_id as sessionId, project_id as projectId, goal, status, plan_json as planJson, workspace_path as workspacePath, stop_reason as stopReason, version, created_at as createdAt, updated_at as updatedAt FROM tasks WHERE id = ?'
+        'SELECT id, session_id as sessionId, project_id as projectId, goal, status, plan_json as planJson, workspace_path as workspacePath, stop_reason as stopReason, resume_status as resumeStatus, control_request as controlRequest, version, created_at as createdAt, updated_at as updatedAt FROM tasks WHERE id = ?'
       )
       .get(id) as TaskRow | undefined;
     if (!row) return undefined;
@@ -64,6 +70,8 @@ export class TaskRepository {
         : undefined,
       workspacePath: row.workspacePath,
       stopReason: row.stopReason ?? undefined,
+      resumeStatus: row.resumeStatus ?? undefined,
+      controlRequest: row.controlRequest ?? undefined,
       version: row.version,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt
@@ -77,14 +85,22 @@ export class TaskRepository {
     const stopReason = Object.hasOwn(patch, 'stopReason')
       ? (patch.stopReason ?? undefined)
       : current.stopReason;
+    const resumeStatus = Object.hasOwn(patch, 'resumeStatus')
+      ? (patch.resumeStatus ?? undefined)
+      : current.resumeStatus;
+    const controlRequest = Object.hasOwn(patch, 'controlRequest')
+      ? (patch.controlRequest ?? undefined)
+      : current.controlRequest;
     const result = this.database
       .prepare(
-        'UPDATE tasks SET status = ?, plan_json = ?, stop_reason = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?'
+        'UPDATE tasks SET status = ?, plan_json = ?, stop_reason = ?, resume_status = ?, control_request = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?'
       )
       .run(
         patch.status ?? current.status,
         plan ? stringifyStoredJson(plan, `task ${id} plan`) : null,
         stopReason ?? null,
+        resumeStatus ?? null,
+        controlRequest ?? null,
         updatedAt,
         id,
         expectedVersion
@@ -98,5 +114,14 @@ export class TaskRepository {
       );
     }
     return this.findById(id)!;
+  }
+
+  listByStatuses(statuses: readonly TaskStatus[]): StoredTask[] {
+    if (statuses.length === 0) return [];
+    const placeholders = statuses.map(() => '?').join(', ');
+    const rows = this.database
+      .prepare(`SELECT id FROM tasks WHERE status IN (${placeholders}) ORDER BY created_at`)
+      .all(...statuses) as Array<{ id: string }>;
+    return rows.map(({ id }) => this.findById(id)!);
   }
 }
