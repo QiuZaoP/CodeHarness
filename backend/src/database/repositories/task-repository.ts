@@ -124,4 +124,22 @@ export class TaskRepository {
       .all(...statuses) as Array<{ id: string }>;
     return rows.map(({ id }) => this.findById(id)!);
   }
+
+  list(filters: { projectId?: string; sessionId?: string } = {}): StoredTask[] {
+    const clauses: string[] = [];
+    const values: string[] = [];
+    if (filters.projectId) {
+      clauses.push('project_id = ?');
+      values.push(filters.projectId);
+    }
+    if (filters.sessionId) {
+      clauses.push('session_id = ?');
+      values.push(filters.sessionId);
+    }
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+    const rows = this.database
+      .prepare(`SELECT id FROM tasks ${where} ORDER BY created_at DESC, id`)
+      .all(...values) as Array<{ id: string }>;
+    return rows.map(({ id }) => this.findById(id)!);
+  }
 }

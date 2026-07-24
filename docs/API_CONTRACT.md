@@ -9,34 +9,46 @@
 - 任务事件：`schemas/event.schema.json`。
 - TypeScript 枚举权威来源：`backend/src/contract-values.ts`。
 
-修改枚举或公开对象时，必须同步上述契约并运行 `npm run schema:check`。`1.x` 只允许向后兼容变更；删除字段、收紧已有字段或改变语义时必须升级主版本。
+修改枚举或公开对象时，必须同步领域契约，运行 `npm run openapi:generate`，再运行
+`npm run schema:check`。校验脚本会拒绝陈旧的 OpenAPI 文件。`1.x` 只允许向后兼容变更；
+删除字段、收紧已有字段或改变语义时必须升级主版本。
 
 ## 当前已实现接口
 
-| 方法   | 路径                              | 用途           |
-| ------ | --------------------------------- | -------------- |
-| `GET`  | `/api/health`                     | 健康检查       |
-| `GET`  | `/api/v1/openapi.json`            | 获取 OpenAPI   |
-| `POST` | `/api/v1/projects`                | 导入本地项目   |
-| `GET`  | `/api/v1/projects/{projectId}`    | 获取项目       |
-| `POST` | `/api/v1/sessions`                | 创建会话       |
-| `POST` | `/api/v1/tasks`                   | 创建任务       |
-| `GET`  | `/api/v1/tasks/{taskId}`          | 获取任务       |
-| `POST` | `/api/v1/tasks/{taskId}/run`      | 运行任务       |
-| `GET`  | `/api/v1/tasks/{taskId}/events`   | 订阅任务事件   |
-| `POST` | `/api/v1/tasks/{taskId}/pause`    | 暂停任务       |
-| `POST` | `/api/v1/tasks/{taskId}/resume`   | 恢复任务       |
-| `POST` | `/api/v1/tasks/{taskId}/cancel`   | 取消任务       |
-| `POST` | `/api/v1/tasks/{taskId}/apply`    | 确认应用       |
-| `POST` | `/api/v1/tasks/{taskId}/rollback` | 回滚任务工作区 |
+| 方法         | 路径                                           | 用途                     |
+| ------------ | ---------------------------------------------- | ------------------------ |
+| `GET`        | `/api/health`                                  | 健康检查                 |
+| `GET`        | `/api/v1/openapi.json`                         | 获取 OpenAPI             |
+| `GET / POST` | `/api/v1/projects`                             | 列出或导入本地项目       |
+| `GET`        | `/api/v1/projects/{projectId}`                 | 获取项目                 |
+| `GET`        | `/api/v1/projects/{projectId}/search?q=`       | 有界文本搜索             |
+| `GET / POST` | `/api/v1/sessions`                             | 列出或创建会话           |
+| `GET`        | `/api/v1/sessions/{sessionId}`                 | 获取会话                 |
+| `GET / POST` | `/api/v1/sessions/{sessionId}/messages`        | 列出或创建用户消息       |
+| `GET / POST` | `/api/v1/tasks`                                | 列出或创建任务           |
+| `GET`        | `/api/v1/tasks/{taskId}`                       | 获取任务                 |
+| `GET`        | `/api/v1/tasks/{taskId}/changes`               | 获取文件变更             |
+| `PATCH`      | `/api/v1/tasks/{taskId}/changes/{changeId}`    | 更新接受/拒绝决定        |
+| `GET`        | `/api/v1/tasks/{taskId}/verifications`         | 获取验证结果             |
+| `GET`        | `/api/v1/tasks/{taskId}/report`                | 获取结构化任务报告       |
+| `POST`       | `/api/v1/tasks/{taskId}/run`                   | 异步运行任务             |
+| `GET`        | `/api/v1/tasks/{taskId}/events`                | 订阅任务事件             |
+| `POST`       | `/api/v1/tasks/{taskId}/{pause,resume,cancel}` | 控制任务                 |
+| `POST`       | `/api/v1/tasks/{taskId}/{apply,rollback}`      | 应用结果或回滚任务工作区 |
 
-消息、搜索、文件级变更审批及验证资源已经在领域 Schema 中预留 DTO，但在对应持久化、
-索引、工具和安全阶段完成前不发布空实现路由。前端旧的 `/api/*` 调用需要迁移到这里列出
-的 `/api/v1/*` 路径。
+列表接口可使用 `projectId` 或 `sessionId` 查询参数缩小范围。消息创建固定写入 `USER` 角色；
+助手消息只由 Harness 持久化。变更决定请求必须携带 `expectedVersion`，陈旧客户端收到
+`409 CONFLICT` 后应重新获取变更。前端旧的 `/api/*` 调用需要迁移到这里列出的
+`/api/v1/*` 路径。
 
 `sourcePath` 和 `workspacePath` 是后端内部路径。创建项目时允许提交 `sourcePath`，但项目和任务响应不会回传这两个字段。
 
-当前版本只面向本机开发：默认绑定 `127.0.0.1`，尚未提供身份认证，且 CORS 仍为开发配置。不得将服务暴露到不可信网络；认证、来源白名单和部署安全配置完成前不属于可部署版本。
+当前版本只面向本机开发：默认绑定 `127.0.0.1`，尚未提供身份认证。CORS 通过逗号分隔的
+`CORS_ORIGINS` 配置，默认只允许本机 Vite 开发地址；`*` 只能用于受信开发环境。不得将服务
+暴露到不可信网络；认证和部署安全配置完成前不属于可部署版本。
+
+每个响应都返回 `x-request-id`。客户端可提交最多 128 字符的安全
+`x-request-id`（字母、数字、点、下划线、冒号和连字符）；缺失或非法时服务端生成 UUID。
 
 控制接口的当前语义：
 
@@ -114,7 +126,13 @@ GET /api/v1/tasks/{taskId}/events
 Last-Event-ID: 42
 ```
 
-也可以使用查询参数 `?after=42`。游标必须是非负整数。服务端只返回 `id > 42` 的事件，然后继续推送新事件，并每 15 秒发送一次注释心跳。
+也可以使用查询参数 `?after=42`。游标必须是非负整数。服务端只返回 `id > 42` 的事件，然后
+继续推送新事件，并每 15 秒发送一次注释心跳。连接建立后既订阅进程内低延迟通知，也按
+`SSE_REPLAY_INTERVAL_MS` 从数据库继续回放，因此即使事件由另一个服务实例提交或短暂错过
+通知也能补齐。所有回放按持久化 `id` 去重和排序。
+
+当底层响应出现背压时，服务端按顺序缓存有限事件；超过 `SSE_MAX_PENDING_EVENTS` 会主动断开
+慢客户端，由客户端使用最后成功处理的 `Last-Event-ID` 重连，防止单个连接无限占用内存。
 
 SSE 的 `id` 和 `event` 分别对应事件信封的 `id`、`type`；`data` 是完整、版本化的事件信封：
 

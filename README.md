@@ -68,7 +68,9 @@ npm run dev
 - 最终 Diff、文件审阅、安全应用与报告：[docs/CHANGES.md](docs/CHANGES.md)
 - JSON Schema：`schemas/domain.schema.json`
 
-公开 API 的规范前缀为 `/api/v1`，当前契约版本为 `1.0.0`。事件携带显式的 `schemaVersion`；修改跨模块对象、枚举或事件时必须同步 OpenAPI、JSON Schema 和契约测试。
+公开 API 的规范前缀为 `/api/v1`，当前契约版本为 `1.0.0`。事件携带显式的
+`schemaVersion`；修改跨模块对象、枚举或事件时先运行 `npm run openapi:generate`，再更新
+契约测试并运行完整检查。
 
 在没有真实模型和解析器之前，后端使用确定性 Fake 模型、文本检索和隔离的任务工作区跑通多轮任务闭环。完整检查命令：
 
@@ -76,4 +78,5 @@ npm run dev
 npm run check
 ```
 
-首期 API 流程是：创建项目 -> 创建会话 -> 创建任务 -> 运行任务。项目创建接口的 `sourcePath` 必须是后端进程可访问的本地目录。
+首期 API 流程是：创建项目 -> 创建会话与消息 -> 创建并异步运行任务 -> 查询验证与 Diff ->
+审阅变更 -> 应用或回滚。项目创建接口的 `sourcePath` 必须是后端进程可访问的本地目录。

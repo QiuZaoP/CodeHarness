@@ -21,6 +21,7 @@ import {
   verificationStatuses
 } from '../backend/src/contract-values.js';
 import type { ModelDecision, RunState } from '../backend/src/types.js';
+import { createOpenApiDocument } from './openapi-contract.js';
 
 type JsonObject = Record<string, unknown>;
 
@@ -57,6 +58,9 @@ const status = readJson('task-status.schema.json');
 const event = readJson('event.schema.json');
 const domain = readJson('domain.schema.json');
 const openapi = readJson('openapi.json');
+if (JSON.stringify(openapi) !== JSON.stringify(createOpenApiDocument())) {
+  throw new Error('OpenAPI document is stale; run npm run openapi:generate');
+}
 
 const ajv = new Ajv2020({ strict: true, allErrors: true });
 const addFormats = addFormatsModule as unknown as (instance: Ajv2020) => void;
@@ -105,21 +109,11 @@ assertSameValues(
 
 const openapiComponents = objectAt(openapi.components, 'openapi.components');
 const openapiSchemas = objectAt(openapiComponents.schemas, 'openapi.components.schemas');
-const openapiTaskStatus = objectAt(openapiSchemas.TaskStatus, 'openapi TaskStatus');
-const openapiError = objectAt(openapiSchemas.Error, 'openapi Error');
-const openapiErrorProperties = objectAt(openapiError.properties, 'openapi Error.properties');
-const openapiErrorBody = objectAt(openapiErrorProperties.error, 'openapi Error.error');
-const openapiErrorBodyProperties = objectAt(
-  openapiErrorBody.properties,
-  'openapi Error.error.properties'
-);
+const openapiTaskStatus = objectAt(openapiSchemas.taskStatus, 'openapi taskStatus');
+const openapiErrorCode = objectAt(openapiSchemas.errorCode, 'openapi errorCode');
 
 assertSameValues('openapi TaskStatus enum', openapiTaskStatus.enum, taskStatuses);
-assertSameValues(
-  'openapi Error code enum',
-  objectAt(openapiErrorBodyProperties.code, 'openapi Error.error.code').enum,
-  errorCodes
-);
+assertSameValues('openapi Error code enum', openapiErrorCode.enum, errorCodes);
 
 if (openapi.openapi !== '3.1.0') {
   throw new Error('OpenAPI version must be 3.1.0');
@@ -133,9 +127,16 @@ const expectedPaths = [
   '/api/v1/openapi.json',
   '/api/v1/projects',
   '/api/v1/projects/{projectId}',
+  '/api/v1/projects/{projectId}/search',
   '/api/v1/sessions',
+  '/api/v1/sessions/{sessionId}',
+  '/api/v1/sessions/{sessionId}/messages',
   '/api/v1/tasks',
   '/api/v1/tasks/{taskId}',
+  '/api/v1/tasks/{taskId}/changes',
+  '/api/v1/tasks/{taskId}/changes/{changeId}',
+  '/api/v1/tasks/{taskId}/verifications',
+  '/api/v1/tasks/{taskId}/report',
   '/api/v1/tasks/{taskId}/run',
   '/api/v1/tasks/{taskId}/events',
   '/api/v1/tasks/{taskId}/pause',
@@ -154,11 +155,18 @@ if (JSON.stringify(actualPaths) !== JSON.stringify(expectedPaths)) {
 const expectedMethods: Record<string, readonly string[]> = {
   '/api/health': ['get'],
   '/api/v1/openapi.json': ['get'],
-  '/api/v1/projects': ['post'],
+  '/api/v1/projects': ['get', 'post'],
   '/api/v1/projects/{projectId}': ['get'],
-  '/api/v1/sessions': ['post'],
-  '/api/v1/tasks': ['post'],
+  '/api/v1/projects/{projectId}/search': ['get'],
+  '/api/v1/sessions': ['get', 'post'],
+  '/api/v1/sessions/{sessionId}': ['get'],
+  '/api/v1/sessions/{sessionId}/messages': ['get', 'post'],
+  '/api/v1/tasks': ['get', 'post'],
   '/api/v1/tasks/{taskId}': ['get'],
+  '/api/v1/tasks/{taskId}/changes': ['get'],
+  '/api/v1/tasks/{taskId}/changes/{changeId}': ['patch'],
+  '/api/v1/tasks/{taskId}/verifications': ['get'],
+  '/api/v1/tasks/{taskId}/report': ['get'],
   '/api/v1/tasks/{taskId}/run': ['post'],
   '/api/v1/tasks/{taskId}/events': ['get'],
   '/api/v1/tasks/{taskId}/pause': ['post'],
@@ -225,34 +233,34 @@ const projectId = '00000000-0000-4000-8000-000000000001';
 const sessionId = '00000000-0000-4000-8000-000000000002';
 const taskId = '00000000-0000-4000-8000-000000000003';
 const timestamp = '2026-07-24T00:00:00.000Z';
-assertContractSamples('ProjectCreate', 'projectCreate', 'ProjectCreate', [
+assertContractSamples('ProjectCreate', 'projectCreate', 'projectCreate', [
   { value: { name: 'fixture', sourcePath: 'C:/fixture' }, valid: true },
   { value: { name: '', sourcePath: 'C:/fixture' }, valid: false },
   { value: { name: 'fixture' }, valid: false }
 ]);
-assertContractSamples('ProjectSummary', 'projectSummary', 'ProjectSummary', [
+assertContractSamples('ProjectSummary', 'projectSummary', 'projectSummary', [
   { value: { id: projectId, name: 'fixture', createdAt: timestamp }, valid: true },
   {
     value: { id: projectId, name: 'fixture', sourcePath: 'C:/fixture', createdAt: timestamp },
     valid: false
   }
 ]);
-assertContractSamples('SessionCreate', 'sessionCreate', 'SessionCreate', [
+assertContractSamples('SessionCreate', 'sessionCreate', 'sessionCreate', [
   { value: { projectId }, valid: true },
   { value: { projectId, title: '' }, valid: false }
 ]);
-assertContractSamples('Session', 'session', 'Session', [
+assertContractSamples('Session', 'session', 'session', [
   {
     value: { id: sessionId, projectId, title: 'New session', createdAt: timestamp },
     valid: true
   },
   { value: { id: sessionId, projectId, title: '', createdAt: timestamp }, valid: false }
 ]);
-assertContractSamples('TaskCreate', 'taskCreate', 'TaskCreate', [
+assertContractSamples('TaskCreate', 'taskCreate', 'taskCreate', [
   { value: { projectId, sessionId, goal: 'Inspect fixture' }, valid: true },
   { value: { projectId, sessionId, goal: '' }, valid: false }
 ]);
-assertContractSamples('Task', 'task', 'Task', [
+assertContractSamples('Task', 'task', 'task', [
   {
     value: {
       id: taskId,

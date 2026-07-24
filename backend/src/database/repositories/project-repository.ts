@@ -93,4 +93,11 @@ export class ProjectRepository {
       createdAt: row.createdAt
     };
   }
+
+  list(): ProjectRecord[] {
+    const rows = this.database
+      .prepare('SELECT id FROM projects ORDER BY created_at DESC, id')
+      .all() as Array<{ id: string }>;
+    return rows.map(({ id }) => this.findById(id)!);
+  }
 }

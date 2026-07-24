@@ -125,12 +125,20 @@ export class AppDatabase {
     return this.projects.findById(id);
   }
 
+  getProjects(): ProjectRecord[] {
+    return this.projects.list();
+  }
+
   createSession(record: SessionRecord): void {
     this.sessions.create(record);
   }
 
   getSession(id: string): SessionRecord | undefined {
     return this.sessions.findById(id);
+  }
+
+  getSessions(projectId?: string): SessionRecord[] {
+    return this.sessions.list(projectId);
   }
 
   createMessage(message: Message): void {
@@ -172,6 +180,10 @@ export class AppDatabase {
 
   getTask(id: string): StoredTask | undefined {
     return this.tasks.findById(id);
+  }
+
+  getTasks(filters: { projectId?: string; sessionId?: string } = {}): StoredTask[] {
+    return this.tasks.list(filters);
   }
 
   getTasksByStatus(statuses: readonly TaskStatus[]): StoredTask[] {

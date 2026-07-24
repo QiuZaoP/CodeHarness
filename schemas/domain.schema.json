@@ -155,6 +155,15 @@
       },
       "additionalProperties": false
     },
+    "projectSearchQuery": {
+      "type": "object",
+      "required": ["q"],
+      "properties": {
+        "q": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 }
+      },
+      "additionalProperties": false
+    },
     "sessionCreate": {
       "type": "object",
       "required": ["projectId"],
@@ -175,11 +184,26 @@
       },
       "additionalProperties": false
     },
+    "sessionParams": {
+      "type": "object",
+      "required": ["sessionId"],
+      "properties": {
+        "sessionId": { "$ref": "#/$defs/id" }
+      },
+      "additionalProperties": false
+    },
+    "sessionListQuery": {
+      "type": "object",
+      "properties": {
+        "projectId": { "$ref": "#/$defs/id" }
+      },
+      "additionalProperties": false
+    },
     "messageCreate": {
       "type": "object",
       "required": ["content"],
       "properties": {
-        "content": { "type": "string", "minLength": 1 }
+        "content": { "type": "string", "minLength": 1, "maxLength": 65536 }
       },
       "additionalProperties": false
     },
@@ -292,6 +316,32 @@
       "required": ["taskId"],
       "properties": {
         "taskId": { "$ref": "#/$defs/id" }
+      },
+      "additionalProperties": false
+    },
+    "taskListQuery": {
+      "type": "object",
+      "properties": {
+        "projectId": { "$ref": "#/$defs/id" },
+        "sessionId": { "$ref": "#/$defs/id" }
+      },
+      "additionalProperties": false
+    },
+    "changeParams": {
+      "type": "object",
+      "required": ["taskId", "changeId"],
+      "properties": {
+        "taskId": { "$ref": "#/$defs/id" },
+        "changeId": { "$ref": "#/$defs/id" }
+      },
+      "additionalProperties": false
+    },
+    "changeDecisionUpdate": {
+      "type": "object",
+      "required": ["decision", "expectedVersion"],
+      "properties": {
+        "decision": { "type": "string", "enum": ["ACCEPTED", "REJECTED"] },
+        "expectedVersion": { "type": "integer", "minimum": 1 }
       },
       "additionalProperties": false
     },

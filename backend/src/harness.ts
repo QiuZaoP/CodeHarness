@@ -207,6 +207,11 @@ export class HarnessRunner {
     return this.dependencies.database.getFileChanges(taskId);
   }
 
+  getVerifications(taskId: string): VerificationResult[] {
+    this.requireTask(taskId);
+    return this.dependencies.database.getVerificationResults(taskId);
+  }
+
   decideFileChange(
     taskId: string,
     changeId: string,

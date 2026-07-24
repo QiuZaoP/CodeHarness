@@ -2,7 +2,7 @@
 
 ## 当前版本
 
-- 数据库 schema version：`5`
+- 数据库 schema version：`6`
 - 迁移记录：`schema_migrations`
 - SQLite `PRAGMA user_version` 与最新迁移版本保持一致
 - 启动设置：`foreign_keys = ON`、WAL、`busy_timeout = 5000`
@@ -16,6 +16,7 @@
 3. `project-source-metadata`
 4. `resumable-task-lifecycle`
 5. `task-run-checkpoints-and-budgets`
+6. `file-change-traceability`
 
 没有 `schema_migrations` 的阶段 1 数据库会先登记兼容的初始迁移，再增加版本列和运行记录表；项目、会话、任务及历史事件会保留。
 
@@ -52,8 +53,10 @@
 - 控制请求 + `task.control_requested` 审计。
 - 状态恢复 + 状态事件 + 审计。
 - 运行检查点创建或乐观版本更新。
+- 文件决定乐观版本更新 + `change.updated` + `file_change` 审计。
 
-事务提交后才向内存 SSE Broker 发布事件。模型、命令、文件和网络操作不能放入 SQLite 事务。
+事务提交后才向进程内 SSE Broker 发布事件；SSE 连接还会按游标轮询已持久化事件，从而补齐
+其他实例写入或短暂错过的通知。模型、命令、文件和网络操作不能放入 SQLite 事务。
 
 任务使用从 `1` 开始的整数 `version`。更新 SQL 必须同时匹配任务 ID 和调用方持有的 expected version；过期更新返回 `409 CONFLICT`，不会写入事件或审计。
 

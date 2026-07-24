@@ -22,7 +22,8 @@ import { BudgetManager } from './budget-manager.js';
 import { ContextManager } from './context-manager.js';
 import { WorkspaceManager } from './workspace.js';
 import { domainRef, domainSchema, errorResponses } from './api/contract-schemas.js';
-import type { TaskEvent } from './types.js';
+import { eventCursor, SseConnection } from './sse.js';
+import type { ChangeDecision } from './types.js';
 
 interface ProjectBody {
   name: string;
@@ -37,6 +38,18 @@ interface TaskBody {
   sessionId: string;
   goal: string;
 }
+interface MessageBody {
+  content: string;
+}
+interface ChangeDecisionBody {
+  decision: Exclude<ChangeDecision, 'PENDING'>;
+  expectedVersion: number;
+}
+
+const arrayOf = (definition: string) => ({
+  type: 'array',
+  items: domainRef(definition)
+});
 
 function isValidationError(error: unknown): error is { validation: unknown } {
   return typeof error === 'object' && error !== null && 'validation' in error;
@@ -103,7 +116,16 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
     budgetManager,
     contextManager
   });
-  const app = Fastify({ logger: { level: config.logLevel } });
+  const app = Fastify({
+    logger: { level: config.logLevel },
+    genReqId: (request) => {
+      const supplied = request.headers['x-request-id'];
+      const value = Array.isArray(supplied) ? supplied[0] : supplied;
+      return typeof value === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(value)
+        ? value
+        : randomUUID();
+    }
+  });
   const scheduler = new TaskScheduler(database, harness, {
     onBackgroundError: (error) => app.log.error(error)
   });
@@ -116,7 +138,13 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
   });
 
   app.addSchema(domainSchema);
-  app.register(cors, { origin: true });
+  app.register(cors, {
+    origin: config.corsOrigins.includes('*') ? true : config.corsOrigins,
+    exposedHeaders: ['x-request-id']
+  });
+  app.addHook('onRequest', async (request, reply) => {
+    reply.header('x-request-id', request.id);
+  });
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof AppError) return reply.code(error.statusCode).send(errorBody(error));
@@ -166,6 +194,16 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
     }
   );
 
+  app.get(
+    '/api/v1/projects',
+    {
+      schema: {
+        response: { 200: arrayOf('projectSummary'), ...errorResponses }
+      }
+    },
+    async () => database.getProjects()
+  );
+
   app.get<{ Params: { projectId: string } }>(
     '/api/v1/projects/:projectId',
     {
@@ -178,6 +216,33 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
       const project = database.getProject(request.params.projectId);
       if (!project) throw new AppError('NOT_FOUND', 'Project not found', request.params, 404);
       return project;
+    }
+  );
+
+  app.get<{
+    Params: { projectId: string };
+    Querystring: { q: string; limit?: number };
+  }>(
+    '/api/v1/projects/:projectId/search',
+    {
+      schema: {
+        params: domainRef('projectParams'),
+        querystring: domainRef('projectSearchQuery'),
+        response: { 200: arrayOf('searchResult'), ...errorResponses }
+      }
+    },
+    async (request) => {
+      if (!database.getProject(request.params.projectId)) {
+        throw new AppError('NOT_FOUND', 'Project not found', request.params, 404);
+      }
+      const results = await codeIndex.searchText(
+        request.params.projectId,
+        request.query.q,
+        AbortSignal.timeout(config.maxIndexTimeoutMs)
+      );
+      return results
+        .slice(0, request.query.limit ?? 50)
+        .map(({ path: filePath, line, preview }) => ({ path: filePath, line, preview }));
     }
   );
 
@@ -204,6 +269,78 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
     }
   );
 
+  app.get<{ Querystring: { projectId?: string } }>(
+    '/api/v1/sessions',
+    {
+      schema: {
+        querystring: domainRef('sessionListQuery'),
+        response: { 200: arrayOf('session'), ...errorResponses }
+      }
+    },
+    async (request) => {
+      if (request.query.projectId && !database.getProject(request.query.projectId)) {
+        throw new AppError('NOT_FOUND', 'Project not found', request.query, 404);
+      }
+      return database.getSessions(request.query.projectId);
+    }
+  );
+
+  app.get<{ Params: { sessionId: string } }>(
+    '/api/v1/sessions/:sessionId',
+    {
+      schema: {
+        params: domainRef('sessionParams'),
+        response: { 200: domainRef('session'), ...errorResponses }
+      }
+    },
+    async (request) => {
+      const session = database.getSession(request.params.sessionId);
+      if (!session) throw new AppError('NOT_FOUND', 'Session not found', request.params, 404);
+      return session;
+    }
+  );
+
+  app.get<{ Params: { sessionId: string } }>(
+    '/api/v1/sessions/:sessionId/messages',
+    {
+      schema: {
+        params: domainRef('sessionParams'),
+        response: { 200: arrayOf('message'), ...errorResponses }
+      }
+    },
+    async (request) => {
+      if (!database.getSession(request.params.sessionId)) {
+        throw new AppError('NOT_FOUND', 'Session not found', request.params, 404);
+      }
+      return database.getMessages(request.params.sessionId);
+    }
+  );
+
+  app.post<{ Params: { sessionId: string }; Body: MessageBody }>(
+    '/api/v1/sessions/:sessionId/messages',
+    {
+      schema: {
+        params: domainRef('sessionParams'),
+        body: domainRef('messageCreate'),
+        response: { 201: domainRef('message'), ...errorResponses }
+      }
+    },
+    async (request, reply) => {
+      if (!database.getSession(request.params.sessionId)) {
+        throw new AppError('NOT_FOUND', 'Session not found', request.params, 404);
+      }
+      const message = {
+        id: randomUUID(),
+        sessionId: request.params.sessionId,
+        role: 'USER' as const,
+        content: request.body.content,
+        createdAt: new Date().toISOString()
+      };
+      database.createMessage(message);
+      return reply.code(201).send(message);
+    }
+  );
+
   app.post<{ Body: TaskBody }>(
     '/api/v1/tasks',
     {
@@ -219,6 +356,25 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
     }
   );
 
+  app.get<{ Querystring: { projectId?: string; sessionId?: string } }>(
+    '/api/v1/tasks',
+    {
+      schema: {
+        querystring: domainRef('taskListQuery'),
+        response: { 200: arrayOf('task'), ...errorResponses }
+      }
+    },
+    async (request) => {
+      if (request.query.projectId && !database.getProject(request.query.projectId)) {
+        throw new AppError('NOT_FOUND', 'Project not found', request.query, 404);
+      }
+      if (request.query.sessionId && !database.getSession(request.query.sessionId)) {
+        throw new AppError('NOT_FOUND', 'Session not found', request.query, 404);
+      }
+      return database.getTasks(request.query);
+    }
+  );
+
   app.get<{ Params: { taskId: string } }>(
     '/api/v1/tasks/:taskId',
     {
@@ -228,6 +384,60 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
       }
     },
     async (request) => harness.getTask(request.params.taskId)
+  );
+
+  app.get<{ Params: { taskId: string } }>(
+    '/api/v1/tasks/:taskId/changes',
+    {
+      schema: {
+        params: domainRef('taskParams'),
+        response: { 200: arrayOf('fileChange'), ...errorResponses }
+      }
+    },
+    async (request) => harness.getFileChanges(request.params.taskId)
+  );
+
+  app.patch<{
+    Params: { taskId: string; changeId: string };
+    Body: ChangeDecisionBody;
+  }>(
+    '/api/v1/tasks/:taskId/changes/:changeId',
+    {
+      schema: {
+        params: domainRef('changeParams'),
+        body: domainRef('changeDecisionUpdate'),
+        response: { 200: domainRef('fileChange'), ...errorResponses }
+      }
+    },
+    async (request) =>
+      harness.decideFileChange(
+        request.params.taskId,
+        request.params.changeId,
+        request.body.decision,
+        request.body.expectedVersion
+      )
+  );
+
+  app.get<{ Params: { taskId: string } }>(
+    '/api/v1/tasks/:taskId/verifications',
+    {
+      schema: {
+        params: domainRef('taskParams'),
+        response: { 200: arrayOf('verificationResult'), ...errorResponses }
+      }
+    },
+    async (request) => harness.getVerifications(request.params.taskId)
+  );
+
+  app.get<{ Params: { taskId: string } }>(
+    '/api/v1/tasks/:taskId/report',
+    {
+      schema: {
+        params: domainRef('taskParams'),
+        response: { 200: domainRef('taskReport'), ...errorResponses }
+      }
+    },
+    async (request) => harness.getReport(request.params.taskId)
   );
 
   app.post<{ Params: { taskId: string } }>(
@@ -309,38 +519,51 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
     },
     async (request, reply) => {
       const task = harness.getTask(request.params.taskId);
-      const lastEventId = request.headers['last-event-id'];
-      const rawAfter =
-        request.query.after ?? (Array.isArray(lastEventId) ? lastEventId[0] : lastEventId) ?? 0;
-      const after = Number(rawAfter);
-      if (!Number.isSafeInteger(after) || after < 0) {
-        throw new AppError('VALIDATION_ERROR', 'Event cursor must be a non-negative integer', {
-          after: rawAfter
-        });
-      }
+      const after = eventCursor(request.query.after, request.headers['last-event-id']);
       reply.hijack();
       reply.raw.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
-        Connection: 'keep-alive'
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+        'x-request-id': request.id
       });
-      const write = (event: TaskEvent) => {
-        reply.raw.write(
-          `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`
-        );
+      const stream = new SseConnection(reply.raw, after, config.sseMaxPendingEvents);
+      let replaying = false;
+      let replayRequested = false;
+      const replay = () => {
+        if (stream.isClosed) return;
+        if (replaying) {
+          replayRequested = true;
+          return;
+        }
+        do {
+          replayRequested = false;
+          replaying = true;
+          try {
+            database.getEvents(task.id, stream.cursor).forEach((event) => stream.sendEvent(event));
+          } finally {
+            replaying = false;
+          }
+        } while (replayRequested && !stream.isClosed);
       };
-      database.getEvents(task.id, after).forEach(write);
-      const unsubscribe = broker.subscribe(task.id, write);
-      const heartbeat = setInterval(() => reply.raw.write(': keep-alive\n\n'), 15_000);
+      const unsubscribe = broker.subscribe(task.id, replay);
+      replay();
+      const persistedReplay = setInterval(replay, config.sseReplayIntervalMs);
+      const heartbeat = setInterval(() => stream.sendHeartbeat(), 15_000);
       request.raw.on('close', () => {
+        stream.close();
+        clearInterval(persistedReplay);
         clearInterval(heartbeat);
         unsubscribe();
       });
     }
   );
 
-  app.get('/api/v1/openapi.json', async () =>
-    JSON.parse(await fs.readFile(path.resolve('schemas/openapi.json'), 'utf8'))
+  app.get(
+    '/api/v1/openapi.json',
+    { schema: { response: { 200: { type: 'object', additionalProperties: true } } } },
+    async () => JSON.parse(await fs.readFile(path.resolve('schemas/openapi.json'), 'utf8'))
   );
   return app;
 }

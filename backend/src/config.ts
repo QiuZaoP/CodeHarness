@@ -11,6 +11,15 @@ function numberEnv(name: string, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
+function listEnv(name: string, fallback: readonly string[]): string[] {
+  const raw = process.env[name];
+  if (raw === undefined) return [...fallback];
+  return raw
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
 export const config = {
   nodeEnv: process.env.NODE_ENV ?? 'development',
   host: process.env.HOST ?? '127.0.0.1',
@@ -27,6 +36,7 @@ export const config = {
   taskLeaseTtlMs: intEnv('TASK_LEASE_TTL_MS', 15_000),
   taskControlPollMs: intEnv('TASK_CONTROL_POLL_MS', 250),
   maxModelTimeoutMs: intEnv('MAX_MODEL_TIMEOUT_MS', 30_000),
+  maxIndexTimeoutMs: intEnv('MAX_INDEX_TIMEOUT_MS', 30_000),
   maxTaskDurationMs: intEnv('MAX_TASK_DURATION_MS', 15 * 60_000),
   maxTaskToolCalls: intEnv('MAX_TASK_TOOL_CALLS', 80),
   maxTaskChangedFiles: intEnv('MAX_TASK_CHANGED_FILES', 100),
@@ -44,5 +54,8 @@ export const config = {
   maxImportBytes: intEnv('MAX_IMPORT_BYTES', 512 * 1024 * 1024),
   maxFileBytes: intEnv('MAX_FILE_BYTES', 5 * 1024 * 1024),
   workspaceRetentionHours: intEnv('WORKSPACE_RETENTION_HOURS', 168),
+  corsOrigins: listEnv('CORS_ORIGINS', ['http://127.0.0.1:5173', 'http://localhost:5173']),
+  sseReplayIntervalMs: intEnv('SSE_REPLAY_INTERVAL_MS', 1_000),
+  sseMaxPendingEvents: intEnv('SSE_MAX_PENDING_EVENTS', 1_000),
   mockMode: (process.env.MOCK_MODE ?? 'true').toLowerCase() === 'true'
 } as const;

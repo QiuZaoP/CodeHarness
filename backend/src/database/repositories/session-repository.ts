@@ -19,6 +19,21 @@ export class SessionRepository {
       .get(id) as SessionRecord | undefined;
   }
 
+  list(projectId?: string): SessionRecord[] {
+    const rows = projectId
+      ? (this.database
+          .prepare(
+            'SELECT id, project_id as projectId, title, created_at as createdAt FROM sessions WHERE project_id = ? ORDER BY created_at DESC, id'
+          )
+          .all(projectId) as SessionRecord[])
+      : (this.database
+          .prepare(
+            'SELECT id, project_id as projectId, title, created_at as createdAt FROM sessions ORDER BY created_at DESC, id'
+          )
+          .all() as SessionRecord[]);
+    return rows;
+  }
+
   createMessage(message: Message): void {
     this.database
       .prepare(
