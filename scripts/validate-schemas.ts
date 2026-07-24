@@ -125,6 +125,7 @@ if (openapi['x-contract-schema-version'] !== contractSchemaVersion) {
 const expectedPaths = [
   '/api/health',
   '/api/v1/openapi.json',
+  '/api/v1/metrics',
   '/api/v1/projects',
   '/api/v1/projects/{projectId}',
   '/api/v1/projects/{projectId}/search',
@@ -155,6 +156,7 @@ if (JSON.stringify(actualPaths) !== JSON.stringify(expectedPaths)) {
 const expectedMethods: Record<string, readonly string[]> = {
   '/api/health': ['get'],
   '/api/v1/openapi.json': ['get'],
+  '/api/v1/metrics': ['get'],
   '/api/v1/projects': ['get', 'post'],
   '/api/v1/projects/{projectId}': ['get'],
   '/api/v1/projects/{projectId}/search': ['get'],

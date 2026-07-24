@@ -19,6 +19,7 @@
 | ------------ | ---------------------------------------------- | ------------------------ |
 | `GET`        | `/api/health`                                  | 健康检查                 |
 | `GET`        | `/api/v1/openapi.json`                         | 获取 OpenAPI             |
+| `GET`        | `/api/v1/metrics`                              | 获取运行质量指标         |
 | `GET / POST` | `/api/v1/projects`                             | 列出或导入本地项目       |
 | `GET`        | `/api/v1/projects/{projectId}`                 | 获取项目                 |
 | `GET`        | `/api/v1/projects/{projectId}/search?q=`       | 有界文本搜索             |
@@ -165,6 +166,7 @@ SSE payload。
 模型和索引适配器的错误分类、降级能力与接入清单见 [PORTS.md](PORTS.md)。
 上下文来源、摘要游标、运行检查点和 `BUDGET_EXCEEDED` 语义见
 [CONTEXT_BUDGET.md](CONTEXT_BUDGET.md)。
+质量门禁、指标口径、日志脱敏和保留清理策略见 [QUALITY.md](QUALITY.md)。
 
 ## 错误码
 

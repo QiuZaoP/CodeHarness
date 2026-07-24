@@ -20,6 +20,7 @@ const publicSchemaRoots = [
   'changeDecisionUpdate',
   'verificationResult',
   'taskReport',
+  'runtimeMetrics',
   'errorResponse'
 ] as const;
 
@@ -112,6 +113,15 @@ export function createOpenApiDocument(): JsonObject {
         get: {
           operationId: 'getOpenApi',
           responses: { 200: response('OpenAPI 3.1 document', { type: 'object' }) }
+        }
+      },
+      '/api/v1/metrics': {
+        get: {
+          operationId: 'getRuntimeMetrics',
+          responses: {
+            200: response('Runtime quality metrics', schema('runtimeMetrics')),
+            ...errors(500)
+          }
         }
       },
       '/api/v1/projects': {

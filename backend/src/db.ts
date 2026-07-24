@@ -19,6 +19,7 @@ import {
   FileChangeRepository,
   type StoredFileChange
 } from './database/repositories/file-change-repository.js';
+import { MetricsRepository } from './database/repositories/metrics-repository.js';
 import { ProjectRepository } from './database/repositories/project-repository.js';
 import { SessionRepository } from './database/repositories/session-repository.js';
 import { SnapshotRepository } from './database/repositories/snapshot-repository.js';
@@ -32,6 +33,7 @@ import type {
   ChangeDecision,
   FileChange,
   Message,
+  RuntimeMetrics,
   StoredTask,
   TaskLease,
   TaskStatus,
@@ -72,6 +74,7 @@ export class AppDatabase {
   private readonly events: EventRepository;
   private readonly audits: AuditRepository;
   private readonly fileChanges: FileChangeRepository;
+  private readonly metrics: MetricsRepository;
   private readonly taskSteps: TaskStepRepository;
   private readonly taskLeases: TaskLeaseRepository;
   private readonly taskRuns: TaskRunRepository;
@@ -97,6 +100,7 @@ export class AppDatabase {
     this.events = new EventRepository(this.connection);
     this.audits = new AuditRepository(this.connection);
     this.fileChanges = new FileChangeRepository(this.connection);
+    this.metrics = new MetricsRepository(this.connection);
     this.taskSteps = new TaskStepRepository(this.connection);
     this.taskLeases = new TaskLeaseRepository(this.connection);
     this.taskRuns = new TaskRunRepository(this.connection);
@@ -115,6 +119,10 @@ export class AppDatabase {
 
   getAppliedMigrations(): AppliedMigration[] {
     return getAppliedMigrations(this.connection);
+  }
+
+  getRuntimeMetrics(generatedAt = new Date().toISOString()): RuntimeMetrics {
+    return this.metrics.snapshot(generatedAt);
   }
 
   createProject(record: ProjectRecord): void {

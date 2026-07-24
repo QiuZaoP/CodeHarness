@@ -75,3 +75,7 @@
   事务，安全应用规则见 [CHANGES.md](CHANGES.md)。
 - `task_run_checkpoints` 保存服务重启后仍需继续累计的上下文引用、模型用量、工具次数、
   读取字节、变更文件和验证次数；具体规则见 [CONTEXT_BUDGET.md](CONTEXT_BUDGET.md)。
+- 运行指标直接聚合任务、工具、验证和检查点事实，不另建会漂移的计数表；指标口径见
+  [QUALITY.md](QUALITY.md)。
+- 超过保留期的终态任务工作区可删除，但任务、事件、审计、变更和验证数据库事实当前不自动
+  删除。

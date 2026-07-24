@@ -690,6 +690,94 @@
       },
       "additionalProperties": false
     },
+    "runtimeMetrics": {
+      "type": "object",
+      "required": ["generatedAt", "tasks", "tools", "verifications", "modelUsage"],
+      "properties": {
+        "generatedAt": { "$ref": "#/$defs/timestamp" },
+        "tasks": {
+          "type": "object",
+          "required": [
+            "total",
+            "byStatus",
+            "successful",
+            "failed",
+            "successRate",
+            "averageDurationMs"
+          ],
+          "properties": {
+            "total": { "type": "integer", "minimum": 0 },
+            "byStatus": {
+              "type": "object",
+              "required": [
+                "CREATED",
+                "PRECHECKING",
+                "PLANNING",
+                "EXECUTING",
+                "VERIFYING",
+                "READY_FOR_REVIEW",
+                "APPLIED",
+                "WAITING_USER",
+                "PAUSED",
+                "CANCELLED",
+                "FAILED"
+              ],
+              "properties": {
+                "CREATED": { "type": "integer", "minimum": 0 },
+                "PRECHECKING": { "type": "integer", "minimum": 0 },
+                "PLANNING": { "type": "integer", "minimum": 0 },
+                "EXECUTING": { "type": "integer", "minimum": 0 },
+                "VERIFYING": { "type": "integer", "minimum": 0 },
+                "READY_FOR_REVIEW": { "type": "integer", "minimum": 0 },
+                "APPLIED": { "type": "integer", "minimum": 0 },
+                "WAITING_USER": { "type": "integer", "minimum": 0 },
+                "PAUSED": { "type": "integer", "minimum": 0 },
+                "CANCELLED": { "type": "integer", "minimum": 0 },
+                "FAILED": { "type": "integer", "minimum": 0 }
+              },
+              "additionalProperties": false
+            },
+            "successful": { "type": "integer", "minimum": 0 },
+            "failed": { "type": "integer", "minimum": 0 },
+            "successRate": { "type": "number", "minimum": 0, "maximum": 1 },
+            "averageDurationMs": { "type": "number", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "tools": {
+          "type": "object",
+          "required": ["total", "failed", "cancelled", "failureRate"],
+          "properties": {
+            "total": { "type": "integer", "minimum": 0 },
+            "failed": { "type": "integer", "minimum": 0 },
+            "cancelled": { "type": "integer", "minimum": 0 },
+            "failureRate": { "type": "number", "minimum": 0, "maximum": 1 }
+          },
+          "additionalProperties": false
+        },
+        "verifications": {
+          "type": "object",
+          "required": ["total", "failed", "errors"],
+          "properties": {
+            "total": { "type": "integer", "minimum": 0 },
+            "failed": { "type": "integer", "minimum": 0 },
+            "errors": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "modelUsage": {
+          "type": "object",
+          "required": ["inputTokens", "outputTokens", "cost"],
+          "properties": {
+            "inputTokens": { "type": "integer", "minimum": 0 },
+            "outputTokens": { "type": "integer", "minimum": 0 },
+            "cost": { "type": "number", "minimum": 0 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "auditRecord": {
       "type": "object",
       "required": ["id", "action", "resourceType", "resourceId", "timestamp"],

@@ -66,6 +66,7 @@ npm run dev
 - 上下文选择、历史摘要与持久化预算：[docs/CONTEXT_BUDGET.md](docs/CONTEXT_BUDGET.md)
 - 多轮 Harness、Decision/Observation 与完成门禁：[docs/HARNESS_LOOP.md](docs/HARNESS_LOOP.md)
 - 最终 Diff、文件审阅、安全应用与报告：[docs/CHANGES.md](docs/CHANGES.md)
+- 质量门禁、指标、日志与保留策略：[docs/QUALITY.md](docs/QUALITY.md)
 - JSON Schema：`schemas/domain.schema.json`
 
 公开 API 的规范前缀为 `/api/v1`，当前契约版本为 `1.0.0`。事件携带显式的

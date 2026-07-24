@@ -24,6 +24,8 @@ import { WorkspaceManager } from './workspace.js';
 import { domainRef, domainSchema, errorResponses } from './api/contract-schemas.js';
 import { eventCursor, SseConnection } from './sse.js';
 import type { ChangeDecision } from './types.js';
+import { loggerOptions } from './logger.js';
+import { taskStatuses } from './contract-values.js';
 
 interface ProjectBody {
   name: string;
@@ -117,7 +119,7 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
     contextManager
   });
   const app = Fastify({
-    logger: { level: config.logLevel },
+    logger: loggerOptions,
     genReqId: (request) => {
       const supplied = request.headers['x-request-id'];
       const value = Array.isArray(supplied) ? supplied[0] : supplied;
@@ -127,12 +129,34 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
     }
   });
   const scheduler = new TaskScheduler(database, harness, {
-    onBackgroundError: (error) => app.log.error(error)
+    onBackgroundError: (error) => app.log.error({ err: error }, 'Background task failed')
   });
   scheduler.recoverInterrupted();
   scheduler.startRecoveryMonitor();
+  const protectedWorkspaceStatuses = taskStatuses.filter(
+    (status) => !['APPLIED', 'CANCELLED', 'FAILED'].includes(status)
+  );
+  let pruneCompletion = Promise.resolve();
+  const pruneWorkspaces = () => {
+    pruneCompletion = pruneCompletion
+      .then(async () => {
+        const protectedTaskIds = database
+          .getTasksByStatus(protectedWorkspaceStatuses)
+          .map(({ id }) => id);
+        const removed = await workspaceManager.pruneExpiredTaskWorkspaces(protectedTaskIds);
+        if (removed.length > 0) {
+          app.log.info({ taskIds: removed, count: removed.length }, 'Expired workspaces pruned');
+        }
+      })
+      .catch((error) => app.log.error({ err: error }, 'Workspace pruning failed'));
+  };
+  pruneWorkspaces();
+  const workspacePruneTimer = setInterval(pruneWorkspaces, config.workspacePruneIntervalMs);
+  workspacePruneTimer.unref();
 
   app.addHook('onClose', async () => {
+    clearInterval(workspacePruneTimer);
+    await pruneCompletion;
     await scheduler.shutdown();
     if (ownsDatabase) database.close();
   });
@@ -144,6 +168,12 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
   });
   app.addHook('onRequest', async (request, reply) => {
     reply.header('x-request-id', request.id);
+  });
+  app.addHook('preHandler', async (request) => {
+    const params = request.params as { taskId?: unknown };
+    if (typeof params.taskId === 'string') {
+      request.log = request.log.child({ taskId: params.taskId });
+    }
   });
 
   app.setErrorHandler((error, _request, reply) => {
@@ -164,6 +194,16 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
     service: 'codeharness-backend',
     version: 'v1'
   }));
+
+  app.get(
+    '/api/v1/metrics',
+    {
+      schema: {
+        response: { 200: domainRef('runtimeMetrics'), ...errorResponses }
+      }
+    },
+    async () => database.getRuntimeMetrics()
+  );
 
   app.post<{ Body: ProjectBody }>(
     '/api/v1/projects',

@@ -292,6 +292,34 @@ export interface TaskReport {
   generatedAt: string;
 }
 
+export interface RuntimeMetrics {
+  generatedAt: string;
+  tasks: {
+    total: number;
+    byStatus: Record<TaskStatus, number>;
+    successful: number;
+    failed: number;
+    successRate: number;
+    averageDurationMs: number;
+  };
+  tools: {
+    total: number;
+    failed: number;
+    cancelled: number;
+    failureRate: number;
+  };
+  verifications: {
+    total: number;
+    failed: number;
+    errors: number;
+  };
+  modelUsage: {
+    inputTokens: number;
+    outputTokens: number;
+    cost: number;
+  };
+}
+
 export interface AuditRecord {
   id: string;
   actorId?: string;

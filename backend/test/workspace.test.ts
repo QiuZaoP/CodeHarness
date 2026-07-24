@@ -186,4 +186,25 @@ describe('task workspace isolation', () => {
     expect(after.stdout).toBe(before.stdout);
     expect(path.dirname(imported.projectPath)).toBe(path.join(root, 'managed', 'projects'));
   });
+
+  it('prunes only expired terminal workspaces that are not protected', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codeharness-retention-'));
+    const managed = path.join(root, 'managed');
+    const tasks = path.join(managed, 'tasks');
+    const expiredId = randomUUID();
+    const protectedId = randomUUID();
+    const recentId = randomUUID();
+    await fs.mkdir(path.join(tasks, expiredId), { recursive: true });
+    await fs.mkdir(path.join(tasks, protectedId), { recursive: true });
+    await fs.mkdir(path.join(tasks, recentId), { recursive: true });
+    const old = new Date(Date.now() - 2 * 60 * 60_000);
+    await fs.utimes(path.join(tasks, expiredId), old, old);
+    await fs.utimes(path.join(tasks, protectedId), old, old);
+    const manager = new WorkspaceManager({ root: managed, retentionHours: 1 });
+
+    await expect(manager.pruneExpiredTaskWorkspaces([protectedId])).resolves.toEqual([expiredId]);
+    await expect(fs.stat(path.join(tasks, expiredId))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect((await fs.stat(path.join(tasks, protectedId))).isDirectory()).toBe(true);
+    expect((await fs.stat(path.join(tasks, recentId))).isDirectory()).toBe(true);
+  });
 });

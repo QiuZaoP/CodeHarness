@@ -215,6 +215,24 @@ describe('backend API', () => {
       verifications: [expect.objectContaining({ status: 'PASSED' })],
       risks: []
     });
+    const metricsResponse = await app.inject({ method: 'GET', url: '/api/v1/metrics' });
+    expect(metricsResponse.statusCode).toBe(200);
+    expect(metricsResponse.json()).toMatchObject({
+      tasks: {
+        total: 1,
+        byStatus: { READY_FOR_REVIEW: 1 },
+        successful: 1,
+        failed: 0,
+        successRate: 1
+      },
+      tools: { total: 4, failed: 0, cancelled: 0, failureRate: 0 },
+      verifications: { total: 1, failed: 0, errors: 0 },
+      modelUsage: {
+        inputTokens: expect.any(Number),
+        outputTokens: expect.any(Number),
+        cost: expect.any(Number)
+      }
+    });
     const persistedEvents = db.getEvents(task.id);
     const reconnectAfter = persistedEvents.at(-2)!.id;
     const expectedReplay = persistedEvents.at(-1)!;
