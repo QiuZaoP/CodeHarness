@@ -21,6 +21,7 @@ export const config = {
   maxToolOutputBytes: intEnv('MAX_TOOL_OUTPUT_BYTES', 1024 * 1024),
   taskLeaseTtlMs: intEnv('TASK_LEASE_TTL_MS', 15_000),
   taskControlPollMs: intEnv('TASK_CONTROL_POLL_MS', 250),
+  maxModelTimeoutMs: intEnv('MAX_MODEL_TIMEOUT_MS', 30_000),
   maxImportFiles: intEnv('MAX_IMPORT_FILES', 20_000),
   maxImportBytes: intEnv('MAX_IMPORT_BYTES', 512 * 1024 * 1024),
   maxFileBytes: intEnv('MAX_FILE_BYTES', 5 * 1024 * 1024),

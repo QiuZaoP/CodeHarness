@@ -5,7 +5,10 @@ import { config } from './config.js';
 import type { AppDatabase, TaskEventDraft } from './db.js';
 import { AppError } from './errors.js';
 import type { ToolRegistrationPort } from './ports/tool-registry.js';
+import type { ModelGateway } from './ports/model-gateway.js';
+import type { CodeIndex, ProjectOverview } from './ports/code-index.js';
 import { taskStateMachine } from './state-machine.js';
+import { contractSchemaVersion } from './types.js';
 import type {
   StoredTask,
   TaskPlan,
@@ -21,6 +24,8 @@ export interface HarnessDependencies {
   broker: EventBroker;
   workspaceManager: WorkspaceManager;
   tools: ToolRegistrationPort;
+  modelGateway: ModelGateway;
+  codeIndex: CodeIndex;
 }
 
 interface LifecyclePatch {
@@ -88,20 +93,14 @@ export class HarnessRunner {
       }
       if (task.status === 'PRECHECKING') {
         this.throwIfStopped(task.id, signal);
-        const plan = this.makeMockPlan(task.goal);
-        task = this.transition(task, 'PLANNING', { plan }, [
-          { type: 'task.plan.updated', payload: { plan } }
-        ]);
+        task = this.transition(task, 'PLANNING');
       }
       if (task.status === 'PLANNING') {
         this.throwIfStopped(task.id, signal);
-        const plan = task.plan ?? this.makeMockPlan(task.goal);
-        task = this.transition(
-          task,
-          'EXECUTING',
-          task.plan ? {} : { plan },
-          task.plan ? [] : [{ type: 'task.plan.updated', payload: { plan } }]
-        );
+        const plan = task.plan ?? (await this.plan(task, signal));
+        task = this.transition(task, 'EXECUTING', { plan }, [
+          { type: 'task.plan.updated', payload: { plan } }
+        ]);
       }
       if (task.status === 'EXECUTING') {
         this.throwIfStopped(task.id, signal);
@@ -139,6 +138,22 @@ export class HarnessRunner {
       }
       if (control === 'CANCEL' && !taskStateMachine.isTerminal(current.status)) {
         return this.cancel(taskId);
+      }
+      if (
+        error instanceof AppError &&
+        (error.code === 'MODEL_ERROR' || error.code === 'INDEX_ERROR') &&
+        taskStateMachine.canTransition(current.status, 'WAITING_USER')
+      ) {
+        return this.transition(
+          current,
+          'WAITING_USER',
+          {
+            stopReason: error.message,
+            resumeStatus: taskStateMachine.pauseResumeTarget(current.status),
+            controlRequest: null
+          },
+          [{ type: 'task.waiting_user', payload: { message: error.message } }]
+        );
       }
       if (
         !taskStateMachine.isTerminal(current.status) &&
@@ -364,15 +379,65 @@ export class HarnessRunner {
     ]);
   }
 
-  private makeMockPlan(goal: string): TaskPlan {
+  private async plan(task: StoredTask, signal?: AbortSignal): Promise<TaskPlan> {
+    const controlledSignal = signal ?? new AbortController().signal;
+    const overview = await this.dependencies.codeIndex.getProjectOverview(
+      task.projectId,
+      controlledSignal
+    );
+    this.throwIfStopped(task.id, signal);
+    const response = await this.dependencies.modelGateway.decide(
+      this.planningRequest(task, overview),
+      controlledSignal
+    );
+    this.throwIfStopped(task.id, signal);
+    if (response.decision.type !== 'PLAN_UPDATE') {
+      throw new AppError(
+        'MODEL_ERROR',
+        'Planning requires a PLAN_UPDATE model decision',
+        { category: 'INVALID_DECISION', decisionType: response.decision.type },
+        502
+      );
+    }
+    return response.decision.plan;
+  }
+
+  private planningRequest(task: StoredTask, overview: ProjectOverview) {
+    const goalReference = {
+      ref: `task:${task.id}:goal`,
+      kind: 'SUMMARY' as const,
+      source: 'user-goal'
+    };
+    const overviewReference = {
+      ref: `project:${task.projectId}:overview`,
+      kind: 'PROJECT_OVERVIEW' as const,
+      source: overview.degraded ? 'text-code-index' : 'code-index'
+    };
     return {
-      goal,
-      assumptions: ['首期使用 Mock 模型与文本索引'],
-      steps: [
-        { id: 'inspect', title: '检查项目文件', status: 'PENDING' },
-        { id: 'verify', title: '执行基础验证', status: 'PENDING' }
+      runState: {
+        schemaVersion: contractSchemaVersion,
+        runId: randomUUID(),
+        taskId: task.id,
+        sessionId: task.sessionId,
+        phase: task.status,
+        contextRefs: [goalReference, overviewReference],
+        toolCallIds: [],
+        changedFiles: [],
+        verificationResultIds: [],
+        budget: {
+          maxSteps: config.maxTaskSteps,
+          maxToolCalls: config.maxTaskSteps * 4,
+          maxDurationMs: config.maxModelTimeoutMs,
+          maxChangedFiles: 100,
+          usedSteps: 0,
+          usedToolCalls: 0
+        }
+      },
+      context: [
+        { reference: goalReference, content: task.goal },
+        { reference: overviewReference, content: JSON.stringify(overview) }
       ],
-      verification: ['node --version']
+      availableTools: this.dependencies.tools.definitions()
     };
   }
 

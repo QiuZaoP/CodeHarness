@@ -12,6 +12,12 @@ import { HarnessRunner } from './harness.js';
 import { ToolExecutor } from './tools.js';
 import type { ToolRegistrationPort } from './ports/tool-registry.js';
 import { TaskScheduler } from './task-scheduler.js';
+import { FakeModelGateway } from './adapters/fake-model-gateway.js';
+import { GuardedModelGateway } from './adapters/guarded-model-gateway.js';
+import { TextCodeIndex } from './adapters/text-code-index.js';
+import { FallbackCodeIndex } from './adapters/fallback-code-index.js';
+import type { ModelGateway } from './ports/model-gateway.js';
+import type { CodeIndex } from './ports/code-index.js';
 import { WorkspaceManager } from './workspace.js';
 import { domainRef, domainSchema, errorResponses } from './api/contract-schemas.js';
 import type { TaskEvent } from './types.js';
@@ -38,15 +44,45 @@ export interface AppDependencies {
   database?: AppDatabase;
   workspaceManager?: WorkspaceManager;
   toolExecutor?: ToolRegistrationPort;
+  modelGateway?: ModelGateway;
+  codeIndex?: CodeIndex;
 }
 
 export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
+  const configuredModelGateway =
+    dependencies.modelGateway ?? (config.mockMode ? new FakeModelGateway() : undefined);
+  if (!configuredModelGateway) {
+    throw new AppError(
+      'MODEL_ERROR',
+      'A ModelGateway dependency is required when MOCK_MODE is disabled',
+      { category: 'CONFIGURATION' },
+      500
+    );
+  }
   const ownsDatabase = !dependencies.database;
   const database = dependencies.database ?? new AppDatabase();
   const workspaceManager = dependencies.workspaceManager ?? new WorkspaceManager();
   const broker = new EventBroker();
   const tools = dependencies.toolExecutor ?? new ToolExecutor(workspaceManager);
-  const harness = new HarnessRunner({ database, broker, workspaceManager, tools });
+  const modelGateway = new GuardedModelGateway(configuredModelGateway, config.maxModelTimeoutMs);
+  const textCodeIndex = new TextCodeIndex(
+    (projectId) => database.getProject(projectId)?.sourcePath,
+    {
+      maxFiles: config.maxImportFiles,
+      maxFileBytes: config.maxReadFileBytes
+    }
+  );
+  const codeIndex = dependencies.codeIndex
+    ? new FallbackCodeIndex(dependencies.codeIndex, textCodeIndex)
+    : textCodeIndex;
+  const harness = new HarnessRunner({
+    database,
+    broker,
+    workspaceManager,
+    tools,
+    modelGateway,
+    codeIndex
+  });
   const app = Fastify({ logger: { level: config.logLevel } });
   const scheduler = new TaskScheduler(database, harness, {
     onBackgroundError: (error) => app.log.error(error)

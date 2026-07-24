@@ -4,9 +4,12 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { EventBroker } from '../src/broker.js';
+import { FakeCodeIndex } from '../src/adapters/fake-code-index.js';
+import { FakeModelGateway } from '../src/adapters/fake-model-gateway.js';
 import { AppDatabase, type TaskEventDraft } from '../src/db.js';
 import { HarnessRunner } from '../src/harness.js';
 import type { ToolExecutionContext, ToolRegistrationPort } from '../src/ports/tool-registry.js';
+import type { ModelGateway } from '../src/ports/model-gateway.js';
 import { TaskScheduler } from '../src/task-scheduler.js';
 import type { StoredTask, TaskPlan, ToolCall, ToolDefinition, ToolResult } from '../src/types.js';
 import { WorkspaceManager } from '../src/workspace.js';
@@ -88,7 +91,7 @@ interface Fixture {
   tools: BlockingTools;
 }
 
-async function fixture(): Promise<Fixture> {
+async function fixture(modelGateway: ModelGateway = new FakeModelGateway()): Promise<Fixture> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codeharness-lifecycle-'));
   const source = path.join(root, 'source');
   await fs.mkdir(source);
@@ -117,7 +120,19 @@ async function fixture(): Promise<Fixture> {
     database,
     broker: new EventBroker(),
     workspaceManager,
-    tools
+    tools,
+    modelGateway,
+    codeIndex: new FakeCodeIndex({
+      overview: {
+        projectId,
+        languages: ['Markdown'],
+        entryFiles: [],
+        testFiles: [],
+        buildCommands: [],
+        indexedFiles: 1,
+        degraded: true
+      }
+    })
   });
   const scheduler = new TaskScheduler(database, harness, {
     ownerId: randomUUID(),
@@ -254,5 +269,24 @@ describe('task lifecycle scheduler', () => {
       type: 'task.paused',
       payload: { status: 'PAUSED' }
     });
+  });
+
+  it('degrades a model planning failure into an inspectable waiting state', async () => {
+    const { database, scheduler, task, tools } = await fixture(new FakeModelGateway([]));
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)).toMatchObject({
+      status: 'WAITING_USER',
+      resumeStatus: 'PLANNING',
+      stopReason: 'FakeModelGateway has no queued decision'
+    });
+    expect(database.getEvents(task.id).at(-1)).toMatchObject({
+      type: 'task.waiting_user',
+      payload: { message: 'FakeModelGateway has no queued decision' }
+    });
+    expect(database.getTaskLease(task.id)).toBeUndefined();
+    expect(tools.calls).toEqual([]);
   });
 });
