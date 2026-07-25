@@ -26,6 +26,9 @@ coverage/
 workspace/
 tmp/
 reports/
+docs/test-results/
+docs/test-reports/
+docs/coverage/
 
 # Generated indexes and model artifacts
 *.index/

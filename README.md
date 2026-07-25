@@ -99,16 +99,9 @@ npm run dev
 
 - 健康检查：`http://127.0.0.1:3000/api/health`
 - OpenAPI：`http://127.0.0.1:3000/api/v1/openapi.json`
-- API 与 SSE 契约：[docs/API_CONTRACT.md](docs/API_CONTRACT.md)
-- SQLite 迁移与事务：[docs/PERSISTENCE.md](docs/PERSISTENCE.md)
-- 任务工作区、快照与 Git：[docs/WORKSPACES.md](docs/WORKSPACES.md)
-- 工具注册、安全策略与扩展接口：[docs/TOOLS.md](docs/TOOLS.md)
-- 任务租约、后台执行与恢复：[docs/LIFECYCLE.md](docs/LIFECYCLE.md)
-- 模型网关、代码索引与降级策略：[docs/PORTS.md](docs/PORTS.md)
-- 上下文选择、历史摘要与持久化预算：[docs/CONTEXT_BUDGET.md](docs/CONTEXT_BUDGET.md)
-- 多轮 Harness、Decision/Observation 与完成门禁：[docs/HARNESS_LOOP.md](docs/HARNESS_LOOP.md)
-- 最终 Diff、文件审阅、安全应用与报告：[docs/CHANGES.md](docs/CHANGES.md)
-- 质量门禁、指标、日志与保留策略：[docs/QUALITY.md](docs/QUALITY.md)
+- 角色二架构与实现边界：[docs/harness-runtime/README.md](docs/harness-runtime/README.md)
+- 完整 HTTP、DTO、状态机与 SSE 格式：[docs/harness-runtime/API_REFERENCE.md](docs/harness-runtime/API_REFERENCE.md)
+- 分支合并、适配器接入与验证清单：[docs/harness-runtime/MERGE_GUIDE.md](docs/harness-runtime/MERGE_GUIDE.md)
 - JSON Schema：`schemas/domain.schema.json`
 
 公开 API 的规范前缀为 `/api/v1`，当前契约版本为 `1.0.0`。事件携带显式的

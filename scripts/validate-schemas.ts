@@ -355,4 +355,37 @@ if (
   throw new Error(`TaskEvent sample failed validation: ${ajv.errorsText(validateEvent.errors)}`);
 }
 
+const handoffRoot = path.resolve('docs', 'harness-runtime');
+const handoffOverview = fs.readFileSync(path.join(handoffRoot, 'README.md'), 'utf8');
+const apiReference = fs.readFileSync(path.join(handoffRoot, 'API_REFERENCE.md'), 'utf8');
+const mergeGuide = fs.readFileSync(path.join(handoffRoot, 'MERGE_GUIDE.md'), 'utf8');
+const repositoryReadme = fs.readFileSync(path.resolve('README.md'), 'utf8');
+
+function assertDocumented(label: string, document: string, values: readonly string[]): void {
+  const missing = values.filter((value) => !document.includes(value));
+  if (missing.length > 0) {
+    throw new Error(`${label} is missing from the handoff documentation: ${missing.join(', ')}`);
+  }
+}
+
+assertDocumented('OpenAPI paths', apiReference, actualPaths);
+assertDocumented('Task statuses', apiReference, taskStatuses);
+assertDocumented('Event types', apiReference, eventTypes);
+assertDocumented('Error codes', apiReference, errorCodes);
+assertDocumented('Decision types', mergeGuide, decisionTypes);
+assertDocumented('Tool names', `${handoffOverview}\n${mergeGuide}`, toolNames);
+
+const environmentVariables = fs
+  .readFileSync(path.resolve('.env.example'), 'utf8')
+  .split(/\r?\n/)
+  .map((line) => /^([A-Z][A-Z0-9_]*)=/.exec(line)?.[1])
+  .filter((name): name is string => name !== undefined);
+assertDocumented('Environment variables', mergeGuide, environmentVariables);
+
+assertDocumented('Repository handoff links', repositoryReadme, [
+  'docs/harness-runtime/README.md',
+  'docs/harness-runtime/API_REFERENCE.md',
+  'docs/harness-runtime/MERGE_GUIDE.md'
+]);
+
 console.log('Schema and contract consistency validation passed');
