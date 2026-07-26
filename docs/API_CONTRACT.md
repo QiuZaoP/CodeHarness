@@ -72,3 +72,14 @@ data: {"taskId":"...","timestamp":"...","toolName":"list_files"}
   }
 }
 ```
+
+## Repository index Harness tools
+
+`ToolCall.name` additionally supports `index_repository`, `search_files`, `search_symbols`,
+`find_references`, `find_callers`, `find_callees`, and `search_semantic`. Index results include
+the repository-relative `path`, 1-based `line`, entity or relation type, and a short summary.
+
+`index_repository` accepts a project id and workspace path and performs a hash-based incremental
+rebuild. `search_semantic` returns `{ "mode": "vector", "items": [...] }` when an embedding
+provider is configured and compatible vectors exist. Without a provider or compatible vectors it
+returns `{ "mode": "lexical", "items": [...] }`; it does not issue a model request itself.

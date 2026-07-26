@@ -32,10 +32,19 @@ export class ToolExecutor {
   searchSymbols(projectId: string, query: string) {
     return this.index?.searchSymbols(projectId, query) ?? [];
   }
+  searchFiles(projectId: string, query: string) {
+    return this.index?.searchFiles(projectId, query) ?? [];
+  }
+  findReferences(projectId: string, name: string) {
+    return this.index?.findReferences(projectId, name) ?? [];
+  }
   findCallers(projectId: string, callee: string) {
     return this.index?.findCallers(projectId, callee) ?? [];
   }
-  searchSemantic(projectId: string, query: string) {
+  findCallees(projectId: string, caller: string) {
+    return this.index?.findCallees(projectId, caller) ?? [];
+  }
+  async searchSemantic(projectId: string, query: string) {
     return this.index?.searchSemantic(projectId, query) ?? { mode: 'lexical' as const, items: [] };
   }
 

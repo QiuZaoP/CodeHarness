@@ -15,6 +15,7 @@ describe('backend API', () => {
   it('serves health and runs a task through the mock harness', async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'codeharness-'));
     await fs.writeFile(path.join(directory, 'README.md'), '# Fixture\n');
+    await fs.writeFile(path.join(directory, 'fixture.py'), 'def fixture_symbol():\n    return 1\n');
     const db = new AppDatabase(path.join(directory, 'test.sqlite'));
     resources.push(db);
     const app = buildApp({ database: db });
@@ -27,6 +28,9 @@ describe('backend API', () => {
     });
     expect(projectResponse.statusCode).toBe(201);
     const project = projectResponse.json<{ id: string }>();
+    expect(
+      db.connection.prepare('SELECT name FROM code_symbols WHERE project_id = ?').all(project.id)
+    ).toContainEqual({ name: 'fixture_symbol' });
 
     const sessionResponse = await app.inject({
       method: 'POST',
@@ -46,5 +50,8 @@ describe('backend API', () => {
     expect(runResponse.statusCode).toBe(200);
     expect(runResponse.json<{ status: string }>().status).toBe('READY_FOR_REVIEW');
     expect(db.getEvents(task.id).map((event) => event.type)).toContain('tool.completed');
+    expect(
+      db.getEvents(task.id).some((event) => event.payload.toolName === 'index_repository')
+    ).toBe(true);
   });
 });

@@ -57,6 +57,10 @@ export class HarnessRunner {
       this.publish(task, 'task.plan.updated', { plan });
       task = this.transition(task, 'EXECUTING');
 
+      await this.callTool(task, 'index_repository', () =>
+        tools.indexRepository(task.projectId, task.workspacePath)
+      );
+
       const files = await this.callTool(task, 'list_files', () =>
         tools.listFiles(task.workspacePath)
       );

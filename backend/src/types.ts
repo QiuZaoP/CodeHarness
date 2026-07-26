@@ -61,8 +61,11 @@ export interface ToolCall {
     | 'apply_patch'
     | 'run_command'
     | 'index_repository'
+    | 'search_files'
     | 'search_symbols'
+    | 'find_references'
     | 'find_callers'
+    | 'find_callees'
     | 'search_semantic';
   arguments: Record<string, unknown>;
 }

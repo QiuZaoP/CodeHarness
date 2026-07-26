@@ -60,7 +60,7 @@ npm run dev
 - API 与 SSE 契约：[docs/API_CONTRACT.md](docs/API_CONTRACT.md)
 - JSON Schema：`schemas/domain.schema.json`
 
-在没有真实模型和解析器之前，后端使用 Mock Harness、文本检索和临时项目工作区跑通任务闭环。完整检查命令：
+后端在项目导入时使用原生 Tree-sitter 为 JavaScript、TypeScript/TSX、Python、Java 和 Go 建立增量 SQLite 索引。Harness 可调用文件、符号、引用、调用关系和语义检索工具；未注入 embedding provider 时语义检索会明确降级为词法模式。完整检查命令：
 
 ```powershell
 npm run check
