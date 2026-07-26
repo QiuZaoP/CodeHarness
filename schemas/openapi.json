@@ -1,0 +1,245 @@
+{
+  "openapi": "3.1.0",
+  "info": { "title": "CodeHarness Backend API", "version": "0.1.0" },
+  "servers": [{ "url": "http://127.0.0.1:3000" }],
+  "paths": {
+    "/api/health": { "get": { "responses": { "200": { "description": "Service health" } } } },
+    "/api/v1/projects": {
+      "post": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/ProjectCreate" } }
+          }
+        },
+        "responses": {
+          "201": { "description": "Project created" },
+          "400": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/sessions": {
+      "post": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/SessionCreate" } }
+          }
+        },
+        "responses": { "201": { "description": "Session created" } }
+      }
+    },
+    "/api/v1/tasks": {
+      "post": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/TaskCreate" } }
+          }
+        },
+        "responses": { "201": { "description": "Task created" } }
+      }
+    },
+    "/api/v1/tasks/{taskId}": {
+      "get": {
+        "parameters": [{ "$ref": "#/components/parameters/TaskId" }],
+        "responses": { "200": { "description": "Task" } }
+      }
+    },
+    "/api/v1/tasks/{taskId}/run": {
+      "post": {
+        "parameters": [{ "$ref": "#/components/parameters/TaskId" }],
+        "responses": { "200": { "description": "Task run result" } }
+      }
+    },
+    "/api/v1/tasks/{taskId}/events": {
+      "get": {
+        "parameters": [{ "$ref": "#/components/parameters/TaskId" }],
+        "responses": {
+          "200": {
+            "description": "Server-sent event stream",
+            "content": { "text/event-stream": {} }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}/pause": {
+      "post": {
+        "parameters": [{ "$ref": "#/components/parameters/TaskId" }],
+        "responses": {
+          "200": { "description": "Task paused" },
+          "409": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}/cancel": {
+      "post": {
+        "parameters": [{ "$ref": "#/components/parameters/TaskId" }],
+        "responses": {
+          "200": { "description": "Task cancelled" },
+          "409": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}/rollback": {
+      "post": {
+        "parameters": [{ "$ref": "#/components/parameters/TaskId" }],
+        "responses": {
+          "200": { "description": "Workspace rolled back" },
+          "409": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "TaskId": {
+        "name": "taskId",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" }
+      }
+    },
+    "schemas": {
+      "ProjectCreate": {
+        "type": "object",
+        "required": ["name", "sourcePath"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "sourcePath": { "type": "string", "minLength": 1 }
+        }
+      },
+      "SessionCreate": {
+        "type": "object",
+        "required": ["projectId"],
+        "properties": {
+          "projectId": { "type": "string", "format": "uuid" },
+          "title": { "type": "string" }
+        }
+      },
+      "TaskCreate": {
+        "type": "object",
+        "required": ["projectId", "sessionId", "goal"],
+        "properties": {
+          "projectId": { "type": "string", "format": "uuid" },
+          "sessionId": { "type": "string", "format": "uuid" },
+          "goal": { "type": "string", "minLength": 1 }
+        }
+      },
+      "TaskStatus": {
+        "type": "string",
+        "enum": [
+          "CREATED",
+          "PRECHECKING",
+          "PLANNING",
+          "EXECUTING",
+          "VERIFYING",
+          "READY_FOR_REVIEW",
+          "APPLIED",
+          "WAITING_USER",
+          "PAUSED",
+          "CANCELLED",
+          "FAILED"
+        ]
+      },
+      "Plan": {
+        "type": "object",
+        "required": ["goal", "assumptions", "steps", "verification"],
+        "properties": {
+          "goal": { "type": "string" },
+          "assumptions": { "type": "array", "items": { "type": "string" } },
+          "steps": { "type": "array", "items": { "$ref": "#/components/schemas/PlanStep" } },
+          "verification": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "PlanStep": {
+        "type": "object",
+        "required": ["id", "title", "status"],
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "status": { "type": "string", "enum": ["PENDING", "RUNNING", "DONE"] }
+        }
+      },
+      "Task": {
+        "type": "object",
+        "required": [
+          "id",
+          "projectId",
+          "sessionId",
+          "goal",
+          "status",
+          "workspacePath",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "projectId": { "type": "string", "format": "uuid" },
+          "sessionId": { "type": "string", "format": "uuid" },
+          "goal": { "type": "string" },
+          "status": { "$ref": "#/components/schemas/TaskStatus" },
+          "plan": { "$ref": "#/components/schemas/Plan" },
+          "workspacePath": { "type": "string" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" },
+          "stopReason": { "type": "string" }
+        }
+      },
+      "ToolCall": {
+        "type": "object",
+        "required": ["name", "arguments"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": ["list_files", "search_text", "read_file", "apply_patch", "run_command"]
+          },
+          "arguments": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "DiffFile": {
+        "type": "object",
+        "required": ["path", "status", "additions", "deletions", "patch"],
+        "properties": {
+          "path": { "type": "string" },
+          "status": { "type": "string", "enum": ["ADDED", "MODIFIED", "DELETED", "RENAMED"] },
+          "additions": { "type": "integer", "minimum": 0 },
+          "deletions": { "type": "integer", "minimum": 0 },
+          "patch": { "type": "string" }
+        }
+      },
+      "Event": {
+        "type": "object",
+        "required": ["id", "taskId", "type", "timestamp", "payload"],
+        "properties": {
+          "id": { "type": "integer", "minimum": 1 },
+          "taskId": { "type": "string", "format": "uuid" },
+          "type": { "type": "string" },
+          "timestamp": { "type": "string", "format": "date-time" },
+          "payload": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": ["code", "message"],
+            "properties": {
+              "code": { "type": "string" },
+              "message": { "type": "string" },
+              "details": {}
+            }
+          }
+        }
+      }
+    },
+    "responses": {
+      "Error": {
+        "description": "Structured error",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      }
+    }
+  }
+}
