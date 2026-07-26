@@ -20,6 +20,10 @@ target/
 coverage/
 *.log
 
+# Python bytecode
+__pycache__/
+*.py[cod]
+
 # Local project data
 .cache/
 .data/

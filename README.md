@@ -42,3 +42,22 @@ git switch -c feature/<your-name>-<short-description>
 - 跨模块接口先更新协议和契约测试，再修改实现。
 - 所有代码变更都应附带测试结果和已知风险。
 - 任何涉及文件修改或命令执行的智能体能力，都必须保留 Diff、审计记录和回滚能力。
+
+## 角色 3：代码索引 MVP
+
+代码解析与索引模块当前支持本地目录扫描、默认及自定义忽略规则、常见源文件语言识别，以及按相对路径或文本内容的确定性检索。二进制文件不会写入可检索内容；无法使用 UTF-8 解码的文件会保留元数据并出现在扫描问题中。
+
+```python
+from codeharness_indexer import RepositoryScanner
+
+report = RepositoryScanner("./my-repository").scan()
+for match in report.index.search_content("TODO"):
+    print(match.path, match.line_number)
+```
+
+运行测试（未安装为包时）：
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m unittest discover -s tests -v
+```
