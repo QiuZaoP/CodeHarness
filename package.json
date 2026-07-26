@@ -1,0 +1,20 @@
+{
+  "name": "codeharness-model-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CodeHarness model gateway with DeepSeek and OpenAI-compatible providers",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --experimental-transform-types --test backend/test/*.test.ts",
+    "test:live": "node backend/test/run-live.mjs",
+    "typecheck": "tsc --noEmit",
+    "check": "tsc --noEmit && node --experimental-transform-types --test backend/test/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "typescript": "^5.8.3"
+  }
+}

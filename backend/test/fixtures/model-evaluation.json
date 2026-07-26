@@ -1,0 +1,22 @@
+[
+  {
+    "id": "plan-tool-call",
+    "operation": "decide",
+    "input": "Find the entry point and inspect the README",
+    "expectedDecisionType": "TOOL_CALL",
+    "acceptance": ["tool name is allowed", "arguments is an object", "reason is non-empty"]
+  },
+  {
+    "id": "plan-update",
+    "operation": "decide",
+    "input": "Plan a repository bug investigation",
+    "expectedDecisionType": "PLAN_UPDATE",
+    "acceptance": ["plan has at least one step", "every step has a valid status", "verification is an array"]
+  },
+  {
+    "id": "completion-summary",
+    "operation": "summarize",
+    "input": "Summarize completed changes and verification",
+    "acceptance": ["summary is non-empty", "summary does not contain provider diagnostics"]
+  }
+]
