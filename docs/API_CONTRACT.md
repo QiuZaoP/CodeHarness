@@ -84,10 +84,10 @@ rebuild. `search_semantic` returns `{ "mode": "vector", "items": [...] }` when a
 provider is configured and compatible vectors exist. Without a provider or compatible vectors it
 returns `{ "mode": "lexical", "items": [...] }`; it does not issue a model request itself.
 
-| Tool                                                | Required arguments           | Successful result                                                  | Error behavior                                               |
-| --------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------ |
-| `index_repository`                                  | `projectId`, `workspacePath` | Incremental rebuild completes                                      | Propagates workspace or parser failures as `WORKSPACE_ERROR` |
-| `search_files`, `search_symbols`, `search_semantic` | `projectId`, `query`         | Ordered result items with relative path, line, type, and summary   | Empty array when no match                                    |
-| `find_references`, `find_callers`, `find_callees`   | `projectId`, `name`          | Ordered relation items with relative path, line, type, and summary | Empty array when no match                                    |
+| Tool                                                | Required arguments           | Successful result                                                  | Error behavior                                                                                                   |
+| --------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `index_repository`                                  | `projectId`, `workspacePath` | Incremental rebuild completes                                      | Workspace failures use `WORKSPACE_ERROR`; parser failures record an issue and retain a file-level fallback chunk |
+| `search_files`, `search_symbols`, `search_semantic` | `projectId`, `query`         | Ordered result items with relative path, line, type, and summary   | Empty array when no match                                                                                        |
+| `find_references`, `find_callers`, `find_callees`   | `projectId`, `name`          | Ordered relation items with relative path, line, type, and summary | Empty array when no match                                                                                        |
 
 `search_semantic` always returns an explicit `mode`: `vector` when query and stored vectors have a compatible persisted dimension, otherwise `lexical`. No model request is attempted when no embedding provider is injected.
