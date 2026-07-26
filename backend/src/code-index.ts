@@ -13,6 +13,7 @@ type SymbolResult = {
   path: string;
   name: string;
   kind: string;
+  qualifiedName: string;
   line: number;
   entityType: string;
   summary: string;
@@ -52,7 +53,7 @@ export class CodeIndexService {
   ) {
     this.database.connection.exec(`
       CREATE TABLE IF NOT EXISTS code_files (project_id TEXT NOT NULL, path TEXT NOT NULL, language TEXT, hash TEXT NOT NULL, content TEXT, PRIMARY KEY(project_id, path));
-      CREATE TABLE IF NOT EXISTS code_symbols (project_id TEXT NOT NULL, path TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, line INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS code_symbols (project_id TEXT NOT NULL, path TEXT NOT NULL, name TEXT NOT NULL, qualified_name TEXT NOT NULL, kind TEXT NOT NULL, line INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS code_references (project_id TEXT NOT NULL, path TEXT NOT NULL, name TEXT NOT NULL, line INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS code_calls (project_id TEXT NOT NULL, path TEXT NOT NULL, caller TEXT, callee TEXT NOT NULL, line INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS code_dependencies (project_id TEXT NOT NULL, path TEXT NOT NULL, target TEXT NOT NULL, line INTEGER NOT NULL);
@@ -64,6 +65,15 @@ export class CodeIndexService {
       CREATE INDEX IF NOT EXISTS idx_code_calls_callee ON code_calls(project_id, callee);
       CREATE INDEX IF NOT EXISTS idx_code_dependencies_target ON code_dependencies(project_id, target);
     `);
+    const columns = this.database.connection
+      .prepare('PRAGMA table_info(code_symbols)')
+      .all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === 'qualified_name')) {
+      this.database.connection.exec('ALTER TABLE code_symbols ADD COLUMN qualified_name TEXT');
+      this.database.connection.exec(
+        'UPDATE code_symbols SET qualified_name = name WHERE qualified_name IS NULL'
+      );
+    }
   }
 
   async build(projectId: string, root: string): Promise<void> {
@@ -88,7 +98,7 @@ export class CodeIndexService {
           .run(projectId, file.path, file.language, file.hash, file.content);
         const parsed = parse(file);
         const insertSymbol = this.database.connection.prepare(
-          'INSERT INTO code_symbols VALUES(?,?,?,?,?)'
+          'INSERT INTO code_symbols(project_id,path,name,qualified_name,kind,line) VALUES(?,?,?,?,?,?)'
         );
         const insertCall = this.database.connection.prepare(
           'INSERT INTO code_calls VALUES(?,?,?,?,?)'
@@ -103,12 +113,19 @@ export class CodeIndexService {
           'INSERT INTO code_chunks VALUES(?,?,?,?,?,NULL)'
         );
         for (const symbol of parsed.symbols) {
-          insertSymbol.run(projectId, file.path, symbol.name, symbol.kind, symbol.line);
+          insertSymbol.run(
+            projectId,
+            file.path,
+            symbol.name,
+            symbol.qualifiedName,
+            symbol.kind,
+            symbol.line
+          );
           insertChunk.run(
             projectId,
             file.path,
             symbol.line,
-            `${symbol.kind} ${symbol.name}`,
+            `${symbol.kind} ${symbol.qualifiedName}`,
             symbol.content
           );
         }
@@ -131,9 +148,9 @@ export class CodeIndexService {
   searchSymbols(projectId: string, query: string): SymbolResult[] {
     return this.database.connection
       .prepare(
-        "SELECT path,name,kind,line,kind AS entityType,kind || ' ' || name AS summary FROM code_symbols WHERE project_id = ? AND lower(name) LIKE ? ORDER BY path,line"
+        "SELECT path,name,qualified_name AS qualifiedName,kind,line,kind AS entityType,kind || ' ' || qualified_name AS summary FROM code_symbols WHERE project_id = ? AND (lower(name) LIKE ? OR lower(qualified_name) LIKE ?) ORDER BY path,line"
       )
-      .all(projectId, `%${query.toLowerCase()}%`) as SymbolResult[];
+      .all(projectId, `%${query.toLowerCase()}%`, `%${query.toLowerCase()}%`) as SymbolResult[];
   }
 
   findCallers(projectId: string, callee: string): CallResult[] {
@@ -164,9 +181,9 @@ export class CodeIndexService {
   findCallees(projectId: string, caller: string): CallResult[] {
     return this.database.connection
       .prepare(
-        "SELECT path,caller,callee,line,'call' AS entityType,COALESCE(caller, '<file>') || ' -> ' || callee AS summary FROM code_calls WHERE project_id = ? AND lower(caller) = ? ORDER BY path,line"
+        "SELECT path,caller,callee,line,'call' AS entityType,COALESCE(caller, '<file>') || ' -> ' || callee AS summary FROM code_calls WHERE project_id = ? AND (lower(caller) = ? OR lower(caller) LIKE ?) ORDER BY path,line"
       )
-      .all(projectId, caller.toLowerCase()) as CallResult[];
+      .all(projectId, caller.toLowerCase(), `%.${caller.toLowerCase()}`) as CallResult[];
   }
 
   searchFiles(
@@ -338,7 +355,13 @@ function dependencyTarget(node: Parser.SyntaxNode): string | undefined {
   return raw.match(/^import\s+([\w.]+)/)?.[1];
 }
 function parse(file: IndexedFile) {
-  const symbols: Array<{ name: string; kind: string; line: number; content: string }> = [];
+  const symbols: Array<{
+    name: string;
+    qualifiedName: string;
+    kind: string;
+    line: number;
+    content: string;
+  }> = [];
   const calls: Array<{ caller: string | null; callee: string; line: number }> = [];
   const dependencies: Array<{ target: string; line: number }> = [];
   const references: Array<{ name: string; line: number }> = [];
@@ -346,7 +369,11 @@ function parse(file: IndexedFile) {
   const parser = new Parser();
   parser.setLanguage(languageFor(file.language));
   const tree = parser.parse(file.content);
-  const walk = (node: Parser.SyntaxNode, caller: string | null = null): void => {
+  const walk = (
+    node: Parser.SyntaxNode,
+    caller: string | null = null,
+    scope: string | null = null
+  ): void => {
     if (node.type === 'ERROR' || node.hasError)
       issues.push(`Parse error at line ${node.startPosition.row + 1}`);
     const text = node.text;
@@ -370,8 +397,10 @@ function parse(file: IndexedFile) {
           : node.type.includes('method')
             ? 'method'
             : 'function';
-        symbols.push({ name, kind, line: nodeLine, content: text });
-        caller = name;
+        const qualifiedName = scope ? `${scope}.${name}` : name;
+        symbols.push({ name, qualifiedName, kind, line: nodeLine, content: text });
+        caller = qualifiedName;
+        if (kind === 'class') scope = qualifiedName;
       }
     }
     if (isImportNode(node.type)) {
@@ -392,7 +421,7 @@ function parse(file: IndexedFile) {
         line: nodeLine
       });
     if (node.type === 'identifier') references.push({ name: text, line: nodeLine });
-    for (const child of node.namedChildren) walk(child, caller);
+    for (const child of node.namedChildren) walk(child, caller, scope);
   };
   walk(tree.rootNode);
   return { symbols, calls, dependencies, references, issues: [...new Set(issues)] };

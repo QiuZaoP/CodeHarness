@@ -121,6 +121,29 @@ describe('CodeIndexService', () => {
     ).toEqual([]);
   });
 
+  it('stores qualified class members and resolves their full or final symbol names', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'code-index-'));
+    await fs.writeFile(
+      path.join(root, 'service.py'),
+      'class Service:\n    def execute(self):\n        return helper()\n'
+    );
+    const database = new AppDatabase(path.join(root, 'index.sqlite'));
+    databases.push(database);
+    const service = new CodeIndexService(database);
+
+    await service.build('project-1', root);
+
+    expect(service.searchSymbols('project-1', 'Service.execute')).toContainEqual(
+      expect.objectContaining({ name: 'execute', qualifiedName: 'Service.execute' })
+    );
+    expect(service.findCallees('project-1', 'Service.execute')).toContainEqual(
+      expect.objectContaining({ caller: 'Service.execute', callee: 'helper' })
+    );
+    expect(service.findCallees('project-1', 'execute')).toContainEqual(
+      expect.objectContaining({ caller: 'Service.execute', callee: 'helper' })
+    );
+  });
+
   it('stores AST import targets and rebuilds only changed or deleted paths', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'code-index-'));
     const source = path.join(root, 'sample.js');
