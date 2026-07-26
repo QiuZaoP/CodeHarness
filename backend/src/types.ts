@@ -54,6 +54,15 @@ export interface TaskEvent {
 }
 
 export interface ToolCall {
-  name: 'list_files' | 'search_text' | 'read_file' | 'apply_patch' | 'run_command';
+  name:
+    | 'list_files'
+    | 'search_text'
+    | 'read_file'
+    | 'apply_patch'
+    | 'run_command'
+    | 'index_repository'
+    | 'search_symbols'
+    | 'find_callers'
+    | 'search_semantic';
   arguments: Record<string, unknown>;
 }

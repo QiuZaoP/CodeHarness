@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { AppError } from './errors.js';
 import { config } from './config.js';
 import type { WorkspaceManager } from './workspace.js';
+import type { CodeIndexService } from './code-index.js';
 
 const allowedCommands = new Set(['npm', 'node', 'git']);
 
@@ -20,7 +21,23 @@ function parseCommand(command: string): string[] {
 }
 
 export class ToolExecutor {
-  constructor(private readonly workspaceManager: WorkspaceManager) {}
+  constructor(
+    private readonly workspaceManager: WorkspaceManager,
+    private readonly index?: CodeIndexService
+  ) {}
+
+  async indexRepository(projectId: string, workspace: string): Promise<void> {
+    await this.index?.build(projectId, workspace);
+  }
+  searchSymbols(projectId: string, query: string) {
+    return this.index?.searchSymbols(projectId, query) ?? [];
+  }
+  findCallers(projectId: string, callee: string) {
+    return this.index?.findCallers(projectId, callee) ?? [];
+  }
+  searchSemantic(projectId: string, query: string) {
+    return this.index?.searchSemantic(projectId, query) ?? { mode: 'lexical' as const, items: [] };
+  }
 
   async listFiles(workspace: string, requestedPath = '.'): Promise<string[]> {
     const directory = this.workspaceManager.resolve(workspace, requestedPath);

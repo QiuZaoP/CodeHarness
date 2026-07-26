@@ -11,6 +11,7 @@ import { EventBroker } from './broker.js';
 import { HarnessRunner } from './harness.js';
 import { ToolExecutor } from './tools.js';
 import { WorkspaceManager } from './workspace.js';
+import { CodeIndexService } from './code-index.js';
 
 interface ProjectBody {
   name: string;
@@ -35,7 +36,8 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
   const database = dependencies.database ?? new AppDatabase();
   const workspaceManager = dependencies.workspaceManager ?? new WorkspaceManager();
   const broker = new EventBroker();
-  const tools = new ToolExecutor(workspaceManager);
+  const index = new CodeIndexService(database);
+  const tools = new ToolExecutor(workspaceManager, index);
   const harness = new HarnessRunner({ database, broker, workspaceManager, tools });
   const app = Fastify({ logger: { level: config.logLevel } });
 
@@ -66,6 +68,7 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
       workspacePath,
       createdAt: new Date().toISOString()
     });
+    await index.build(id, workspacePath);
     return reply.code(201).send(database.getProject(id));
   });
 
