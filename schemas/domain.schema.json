@@ -31,6 +31,45 @@
       },
       "additionalProperties": false
     },
+    "projectQueryArguments": {
+      "type": "object",
+      "required": ["projectId", "query"],
+      "properties": {
+        "projectId": { "type": "string" },
+        "query": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "projectNameArguments": {
+      "type": "object",
+      "required": ["projectId", "name"],
+      "properties": {
+        "projectId": { "type": "string" },
+        "name": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "indexQueryResult": {
+      "type": "object",
+      "required": ["path", "line", "entityType", "summary"],
+      "properties": {
+        "path": { "type": "string" },
+        "line": { "type": "integer", "minimum": 1 },
+        "endLine": { "type": "integer", "minimum": 1 },
+        "entityType": { "type": "string" },
+        "summary": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "semanticSearchResult": {
+      "type": "object",
+      "required": ["mode", "items"],
+      "properties": {
+        "mode": { "type": "string", "enum": ["vector", "lexical"] },
+        "items": { "type": "array", "items": { "$ref": "#/$defs/indexQueryResult" } }
+      },
+      "additionalProperties": false
+    },
     "session": {
       "type": "object",
       "required": ["id", "projectId", "title", "createdAt"],
@@ -112,7 +151,49 @@
         },
         "arguments": { "type": "object", "additionalProperties": true }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": { "properties": { "name": { "const": "index_repository" } } },
+          "then": {
+            "properties": {
+              "arguments": {
+                "type": "object",
+                "required": ["projectId", "workspacePath"],
+                "properties": {
+                  "projectId": { "type": "string" },
+                  "workspacePath": { "type": "string" }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "name": { "const": "search_files" } } },
+          "then": { "properties": { "arguments": { "$ref": "#/$defs/projectQueryArguments" } } }
+        },
+        {
+          "if": { "properties": { "name": { "const": "search_symbols" } } },
+          "then": { "properties": { "arguments": { "$ref": "#/$defs/projectQueryArguments" } } }
+        },
+        {
+          "if": { "properties": { "name": { "const": "find_references" } } },
+          "then": { "properties": { "arguments": { "$ref": "#/$defs/projectNameArguments" } } }
+        },
+        {
+          "if": { "properties": { "name": { "const": "find_callers" } } },
+          "then": { "properties": { "arguments": { "$ref": "#/$defs/projectNameArguments" } } }
+        },
+        {
+          "if": { "properties": { "name": { "const": "find_callees" } } },
+          "then": { "properties": { "arguments": { "$ref": "#/$defs/projectNameArguments" } } }
+        },
+        {
+          "if": { "properties": { "name": { "const": "search_semantic" } } },
+          "then": { "properties": { "arguments": { "$ref": "#/$defs/projectQueryArguments" } } }
+        }
+      ]
     },
     "diffFile": {
       "type": "object",

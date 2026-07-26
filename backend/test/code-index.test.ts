@@ -62,10 +62,21 @@ describe('CodeIndexService', () => {
     await expect(service.searchSemantic('project-1', 'retrieve cache entry')).resolves.toEqual({
       mode: 'vector',
       items: [
-        expect.objectContaining({ path: 'sample.py', line: 1, summary: 'function cache_lookup' }),
+        expect.objectContaining({
+          path: 'sample.py',
+          line: 1,
+          endLine: 2,
+          entityType: 'code_chunk',
+          summary: 'function cache_lookup'
+        }),
         expect.objectContaining({ path: 'sample.py', line: 4, summary: 'function unrelated' })
       ]
     });
+    expect(
+      database.connection
+        .prepare('SELECT vector_dimension FROM code_chunks WHERE project_id = ? ORDER BY line')
+        .all('project-1')
+    ).toEqual([{ vector_dimension: 2 }, { vector_dimension: 2 }]);
   });
 
   it('extracts definitions, calls, and imports from every supported AST language', async () => {
@@ -144,6 +155,26 @@ describe('CodeIndexService', () => {
     );
   });
 
+  it('indexes TypeScript and TSX arrow-function declarations as functions', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'code-index-'));
+    await fs.writeFile(
+      path.join(root, 'component.tsx'),
+      'const renderPanel = () => <section>{helper()}</section>;\n'
+    );
+    const database = new AppDatabase(path.join(root, 'index.sqlite'));
+    databases.push(database);
+    const service = new CodeIndexService(database);
+
+    await service.build('project-1', root);
+
+    expect(service.searchSymbols('project-1', 'renderPanel')).toContainEqual(
+      expect.objectContaining({ name: 'renderPanel', kind: 'function', line: 1 })
+    );
+    expect(service.findCallers('project-1', 'helper')).toContainEqual(
+      expect.objectContaining({ caller: 'renderPanel', callee: 'helper', line: 1 })
+    );
+  });
+
   it('stores AST import targets and rebuilds only changed or deleted paths', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'code-index-'));
     const source = path.join(root, 'sample.js');
@@ -201,6 +232,52 @@ describe('CodeIndexService', () => {
         .prepare('SELECT message FROM code_index_issues WHERE project_id = ? AND path = ?')
         .all('project-1', 'broken.py')
     ).not.toEqual([]);
+  });
+
+  it('records parser loading failures while retaining a file-level fallback chunk', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'code-index-'));
+    await fs.writeFile(path.join(root, 'fallback.py'), 'value = 1\n');
+    const database = new AppDatabase(path.join(root, 'index.sqlite'));
+    databases.push(database);
+    const service = new CodeIndexService(database, undefined, () => {
+      throw new Error('native grammar unavailable');
+    });
+
+    await service.build('project-1', root);
+
+    expect(
+      database.connection
+        .prepare('SELECT message FROM code_index_issues WHERE project_id = ? AND path = ?')
+        .all('project-1', 'fallback.py')
+    ).toEqual([{ message: 'Parser unavailable: native grammar unavailable' }]);
+    expect(
+      database.connection
+        .prepare('SELECT summary FROM code_chunks WHERE project_id = ? AND path = ?')
+        .all('project-1', 'fallback.py')
+    ).toEqual([{ summary: 'file fallback.py' }]);
+  });
+
+  it('creates a file-level chunk when a source file has no declarations', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'code-index-'));
+    await fs.writeFile(path.join(root, 'constants.py'), 'MAX_RETRIES = 3\n');
+    const database = new AppDatabase(path.join(root, 'index.sqlite'));
+    databases.push(database);
+    const service = new CodeIndexService(database);
+
+    await service.build('project-1', root);
+
+    await expect(service.searchSemantic('project-1', 'max_retries')).resolves.toMatchObject({
+      mode: 'lexical',
+      items: [
+        {
+          path: 'constants.py',
+          line: 1,
+          endLine: 1,
+          entityType: 'code_chunk',
+          summary: 'file constants.py'
+        }
+      ]
+    });
   });
 
   it('exposes every repository query through the Harness tool executor', async () => {
@@ -263,6 +340,15 @@ describe('CodeIndexService', () => {
     expect(openApi.components.schemas.ToolCall.properties.name.enum).toEqual(
       expect.arrayContaining(requiredTools)
     );
+    expect(domain.$defs.toolCall.allOf).toHaveLength(requiredTools.length);
+    expect(openApi.components.schemas.ToolCall.allOf).toHaveLength(requiredTools.length);
+    expect(domain.$defs.indexQueryResult.required).toEqual(
+      expect.arrayContaining(['path', 'line', 'entityType', 'summary'])
+    );
+    expect(openApi.components.schemas.SemanticSearchResult.properties.mode.enum).toEqual([
+      'vector',
+      'lexical'
+    ]);
     expect(contract).toContain('search_semantic');
     expect(contract).toContain('lexical');
   });

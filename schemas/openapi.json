@@ -208,7 +208,104 @@
             ]
           },
           "arguments": { "type": "object", "additionalProperties": true }
-        }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "name": { "const": "index_repository" } } },
+            "then": {
+              "properties": {
+                "arguments": { "$ref": "#/components/schemas/IndexRepositoryArguments" }
+              }
+            }
+          },
+          {
+            "if": { "properties": { "name": { "const": "search_files" } } },
+            "then": {
+              "properties": {
+                "arguments": { "$ref": "#/components/schemas/ProjectQueryArguments" }
+              }
+            }
+          },
+          {
+            "if": { "properties": { "name": { "const": "search_symbols" } } },
+            "then": {
+              "properties": {
+                "arguments": { "$ref": "#/components/schemas/ProjectQueryArguments" }
+              }
+            }
+          },
+          {
+            "if": { "properties": { "name": { "const": "find_references" } } },
+            "then": {
+              "properties": { "arguments": { "$ref": "#/components/schemas/ProjectNameArguments" } }
+            }
+          },
+          {
+            "if": { "properties": { "name": { "const": "find_callers" } } },
+            "then": {
+              "properties": { "arguments": { "$ref": "#/components/schemas/ProjectNameArguments" } }
+            }
+          },
+          {
+            "if": { "properties": { "name": { "const": "find_callees" } } },
+            "then": {
+              "properties": { "arguments": { "$ref": "#/components/schemas/ProjectNameArguments" } }
+            }
+          },
+          {
+            "if": { "properties": { "name": { "const": "search_semantic" } } },
+            "then": {
+              "properties": {
+                "arguments": { "$ref": "#/components/schemas/ProjectQueryArguments" }
+              }
+            }
+          }
+        ]
+      },
+      "IndexRepositoryArguments": {
+        "type": "object",
+        "required": ["projectId", "workspacePath"],
+        "properties": { "projectId": { "type": "string" }, "workspacePath": { "type": "string" } },
+        "additionalProperties": false
+      },
+      "ProjectQueryArguments": {
+        "type": "object",
+        "required": ["projectId", "query"],
+        "properties": {
+          "projectId": { "type": "string" },
+          "query": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      },
+      "ProjectNameArguments": {
+        "type": "object",
+        "required": ["projectId", "name"],
+        "properties": {
+          "projectId": { "type": "string" },
+          "name": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      },
+      "IndexQueryResult": {
+        "type": "object",
+        "required": ["path", "line", "entityType", "summary"],
+        "properties": {
+          "path": { "type": "string" },
+          "line": { "type": "integer", "minimum": 1 },
+          "endLine": { "type": "integer", "minimum": 1 },
+          "entityType": { "type": "string" },
+          "summary": { "type": "string" }
+        },
+        "additionalProperties": true
+      },
+      "SemanticSearchResult": {
+        "type": "object",
+        "required": ["mode", "items"],
+        "properties": {
+          "mode": { "type": "string", "enum": ["vector", "lexical"] },
+          "items": { "type": "array", "items": { "$ref": "#/components/schemas/IndexQueryResult" } }
+        },
+        "additionalProperties": false
       },
       "DiffFile": {
         "type": "object",

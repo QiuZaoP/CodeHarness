@@ -28,12 +28,19 @@ type CallResult = {
 };
 type SemanticResult = {
   mode: 'vector' | 'lexical';
-  items: Array<{ path: string; line: number; summary: string }>;
+  items: Array<{
+    path: string;
+    line: number;
+    endLine: number;
+    entityType: 'code_chunk';
+    summary: string;
+  }>;
 };
 
 export interface EmbeddingProvider {
   embed(texts: string[]): Promise<number[][]>;
 }
+export type AstParserFactory = (language: string) => Parser;
 
 const ignored = new Set(['.git', 'node_modules', 'dist', 'build', '.data', '__pycache__']);
 const languageByExtension: Record<string, string> = {
@@ -49,7 +56,8 @@ const languageByExtension: Record<string, string> = {
 export class CodeIndexService {
   constructor(
     private readonly database: AppDatabase,
-    private readonly embeddings?: EmbeddingProvider
+    private readonly embeddings?: EmbeddingProvider,
+    private readonly parserFactory: AstParserFactory = createParser
   ) {
     this.database.connection.exec(`
       CREATE TABLE IF NOT EXISTS code_files (project_id TEXT NOT NULL, path TEXT NOT NULL, language TEXT, hash TEXT NOT NULL, content TEXT, PRIMARY KEY(project_id, path));
@@ -57,7 +65,7 @@ export class CodeIndexService {
       CREATE TABLE IF NOT EXISTS code_references (project_id TEXT NOT NULL, path TEXT NOT NULL, name TEXT NOT NULL, line INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS code_calls (project_id TEXT NOT NULL, path TEXT NOT NULL, caller TEXT, callee TEXT NOT NULL, line INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS code_dependencies (project_id TEXT NOT NULL, path TEXT NOT NULL, target TEXT NOT NULL, line INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS code_chunks (project_id TEXT NOT NULL, path TEXT NOT NULL, line INTEGER NOT NULL, summary TEXT NOT NULL, content TEXT NOT NULL, vector_json TEXT);
+      CREATE TABLE IF NOT EXISTS code_chunks (project_id TEXT NOT NULL, path TEXT NOT NULL, line INTEGER NOT NULL, end_line INTEGER NOT NULL, summary TEXT NOT NULL, content TEXT NOT NULL, vector_json TEXT, vector_dimension INTEGER);
       CREATE TABLE IF NOT EXISTS code_index_issues (project_id TEXT NOT NULL, path TEXT NOT NULL, message TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS idx_code_files_project_path ON code_files(project_id, path);
       CREATE INDEX IF NOT EXISTS idx_code_symbols_name ON code_symbols(project_id, name);
@@ -65,15 +73,19 @@ export class CodeIndexService {
       CREATE INDEX IF NOT EXISTS idx_code_calls_callee ON code_calls(project_id, callee);
       CREATE INDEX IF NOT EXISTS idx_code_dependencies_target ON code_dependencies(project_id, target);
     `);
-    const columns = this.database.connection
-      .prepare('PRAGMA table_info(code_symbols)')
-      .all() as Array<{ name: string }>;
-    if (!columns.some((column) => column.name === 'qualified_name')) {
+    const symbolColumns = this.columnsFor('code_symbols');
+    if (!symbolColumns.has('qualified_name')) {
       this.database.connection.exec('ALTER TABLE code_symbols ADD COLUMN qualified_name TEXT');
       this.database.connection.exec(
         'UPDATE code_symbols SET qualified_name = name WHERE qualified_name IS NULL'
       );
     }
+    const chunkColumns = this.columnsFor('code_chunks');
+    if (!chunkColumns.has('end_line'))
+      this.database.connection.exec('ALTER TABLE code_chunks ADD COLUMN end_line INTEGER');
+    if (!chunkColumns.has('vector_dimension'))
+      this.database.connection.exec('ALTER TABLE code_chunks ADD COLUMN vector_dimension INTEGER');
+    this.backfillChunkMetadata();
   }
 
   async build(projectId: string, root: string): Promise<void> {
@@ -96,7 +108,7 @@ export class CodeIndexService {
             'INSERT INTO code_files(project_id,path,language,hash,content) VALUES(?,?,?,?,?)'
           )
           .run(projectId, file.path, file.language, file.hash, file.content);
-        const parsed = parse(file);
+        const parsed = parse(file, this.parserFactory);
         const insertSymbol = this.database.connection.prepare(
           'INSERT INTO code_symbols(project_id,path,name,qualified_name,kind,line) VALUES(?,?,?,?,?,?)'
         );
@@ -110,7 +122,7 @@ export class CodeIndexService {
           'INSERT INTO code_dependencies VALUES(?,?,?,?)'
         );
         const insertChunk = this.database.connection.prepare(
-          'INSERT INTO code_chunks VALUES(?,?,?,?,?,NULL)'
+          'INSERT INTO code_chunks(project_id,path,line,end_line,summary,content,vector_json,vector_dimension) VALUES(?,?,?,?,?,?,NULL,NULL)'
         );
         for (const symbol of parsed.symbols) {
           insertSymbol.run(
@@ -125,8 +137,19 @@ export class CodeIndexService {
             projectId,
             file.path,
             symbol.line,
+            symbol.endLine,
             `${symbol.kind} ${symbol.qualifiedName}`,
             symbol.content
+          );
+        }
+        if (parsed.symbols.length === 0) {
+          insertChunk.run(
+            projectId,
+            file.path,
+            1,
+            Math.max(1, file.content.split(/\r?\n/).length - Number(file.content.endsWith('\n'))),
+            `file ${file.path}`,
+            file.content
           );
         }
         for (const call of parsed.calls)
@@ -206,14 +229,16 @@ export class CodeIndexService {
   async searchSemantic(projectId: string, query: string): Promise<SemanticResult> {
     const chunks = this.database.connection
       .prepare(
-        'SELECT path,line,summary,content,vector_json as vectorJson FROM code_chunks WHERE project_id = ?'
+        'SELECT path,line,end_line as endLine,summary,content,vector_json as vectorJson,vector_dimension as vectorDimension FROM code_chunks WHERE project_id = ?'
       )
       .all(projectId) as Array<{
       path: string;
       line: number;
+      endLine: number;
       summary: string;
       content: string;
       vectorJson?: string;
+      vectorDimension?: number;
     }>;
     if (this.embeddings && chunks.some((chunk) => chunk.vectorJson)) {
       const [queryVector] = await this.embeddings.embed([query]);
@@ -221,11 +246,18 @@ export class CodeIndexService {
         const items = chunks
           .flatMap((chunk) => {
             const vector = parseVector(chunk.vectorJson);
-            if (!vector || vector.length !== queryVector.length) return [];
+            if (
+              !vector ||
+              chunk.vectorDimension !== queryVector.length ||
+              vector.length !== queryVector.length
+            )
+              return [];
             return [
               {
                 path: chunk.path,
                 line: chunk.line,
+                endLine: chunk.endLine,
+                entityType: 'code_chunk' as const,
                 summary: chunk.summary,
                 score: cosineSimilarity(queryVector, vector)
               }
@@ -233,7 +265,13 @@ export class CodeIndexService {
           })
           .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path) || a.line - b.line)
           .slice(0, 20)
-          .map(({ path, line, summary }) => ({ path, line, summary }));
+          .map(({ path, line, endLine, entityType, summary }) => ({
+            path,
+            line,
+            endLine,
+            entityType,
+            summary
+          }));
         if (items.length > 0) return { mode: 'vector', items };
       }
     }
@@ -242,13 +280,21 @@ export class CodeIndexService {
       .map((chunk) => ({
         path: chunk.path,
         line: chunk.line,
+        endLine: chunk.endLine,
+        entityType: 'code_chunk' as const,
         summary: chunk.summary,
         score: overlap(queryTerms, tokens(`${chunk.summary} ${chunk.content}`))
       }))
       .filter((chunk) => chunk.score > 0)
       .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
       .slice(0, 20)
-      .map((chunk) => ({ path: chunk.path, line: chunk.line, summary: chunk.summary }));
+      .map((chunk) => ({
+        path: chunk.path,
+        line: chunk.line,
+        endLine: chunk.endLine,
+        entityType: chunk.entityType,
+        summary: chunk.summary
+      }));
     return { mode: 'lexical', items };
   }
 
@@ -305,11 +351,42 @@ export class CodeIndexService {
       chunks.map((chunk) => `${chunk.summary}\n${chunk.content}`)
     );
     const update = this.database.connection.prepare(
-      'UPDATE code_chunks SET vector_json = ? WHERE rowid = ?'
+      'UPDATE code_chunks SET vector_json = ?, vector_dimension = ? WHERE rowid = ?'
     );
     chunks.forEach((chunk, index) => {
-      if (isVector(vectors[index])) update.run(JSON.stringify(vectors[index]), chunk.rowid);
+      if (isVector(vectors[index]))
+        update.run(JSON.stringify(vectors[index]), vectors[index].length, chunk.rowid);
     });
+  }
+
+  private columnsFor(table: string): Set<string> {
+    return new Set(
+      (
+        this.database.connection.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+          name: string;
+        }>
+      ).map((column) => column.name)
+    );
+  }
+
+  private backfillChunkMetadata(): void {
+    const chunks = this.database.connection
+      .prepare(
+        'SELECT rowid,line,vector_json as vectorJson,vector_dimension as vectorDimension FROM code_chunks'
+      )
+      .all() as Array<{
+      rowid: number;
+      line: number;
+      vectorJson?: string;
+      vectorDimension?: number;
+    }>;
+    const update = this.database.connection.prepare(
+      'UPDATE code_chunks SET end_line = COALESCE(end_line, ?), vector_dimension = COALESCE(vector_dimension, ?) WHERE rowid = ?'
+    );
+    for (const chunk of chunks) {
+      const vector = parseVector(chunk.vectorJson);
+      update.run(chunk.line, vector?.length ?? null, chunk.rowid);
+    }
   }
 }
 
@@ -354,21 +431,32 @@ function dependencyTarget(node: Parser.SyntaxNode): string | undefined {
   if (from) return from[1];
   return raw.match(/^import\s+([\w.]+)/)?.[1];
 }
-function parse(file: IndexedFile) {
+function parse(file: IndexedFile, parserFactory: AstParserFactory) {
   const symbols: Array<{
     name: string;
     qualifiedName: string;
     kind: string;
     line: number;
+    endLine: number;
     content: string;
   }> = [];
   const calls: Array<{ caller: string | null; callee: string; line: number }> = [];
   const dependencies: Array<{ target: string; line: number }> = [];
   const references: Array<{ name: string; line: number }> = [];
   const issues: string[] = [];
-  const parser = new Parser();
-  parser.setLanguage(languageFor(file.language));
-  const tree = parser.parse(file.content);
+  let tree: Parser.Tree;
+  try {
+    const parser = parserFactory(file.language);
+    tree = parser.parse(file.content);
+  } catch (error) {
+    return {
+      symbols,
+      calls,
+      dependencies,
+      references,
+      issues: [`Parser unavailable: ${error instanceof Error ? error.message : String(error)}`]
+    };
+  }
   const walk = (
     node: Parser.SyntaxNode,
     caller: string | null = null,
@@ -378,6 +466,22 @@ function parse(file: IndexedFile) {
       issues.push(`Parse error at line ${node.startPosition.row + 1}`);
     const text = node.text;
     const nodeLine = node.startPosition.row + 1;
+    if (node.type === 'variable_declarator') {
+      const name = node.childForFieldName('name')?.text;
+      const value = node.childForFieldName('value');
+      if (name && (value?.type === 'arrow_function' || value?.type === 'function_expression')) {
+        const qualifiedName = scope ? `${scope}.${name}` : name;
+        symbols.push({
+          name,
+          qualifiedName,
+          kind: 'function',
+          line: nodeLine,
+          endLine: node.endPosition.row + 1,
+          content: text
+        });
+        caller = qualifiedName;
+      }
+    }
     if (
       [
         'function_definition',
@@ -398,7 +502,14 @@ function parse(file: IndexedFile) {
             ? 'method'
             : 'function';
         const qualifiedName = scope ? `${scope}.${name}` : name;
-        symbols.push({ name, qualifiedName, kind, line: nodeLine, content: text });
+        symbols.push({
+          name,
+          qualifiedName,
+          kind,
+          line: nodeLine,
+          endLine: node.endPosition.row + 1,
+          content: text
+        });
         caller = qualifiedName;
         if (kind === 'class') scope = qualifiedName;
       }
@@ -439,4 +550,9 @@ function languageFor(language: string): Parameters<Parser['setLanguage']>[0] {
       } as Record<string, Parameters<Parser['setLanguage']>[0]>
     )[language] ?? JavaScript
   );
+}
+function createParser(language: string): Parser {
+  const parser = new Parser();
+  parser.setLanguage(languageFor(language));
+  return parser;
 }
