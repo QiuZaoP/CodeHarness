@@ -18,6 +18,7 @@ import type {
 import { ToolRegistry } from './tool-registry.js';
 import type { ToolCall, ToolDefinition, ToolPermission, ToolResult } from './types.js';
 import type { WorkspaceManager } from './workspace.js';
+import type { CodeIndexService } from './code-index.js';
 
 interface ReadFileOutput {
   path: string;
@@ -268,6 +269,7 @@ function normalizedRelative(filePath: string): string {
 
 export class ToolExecutor implements ToolRegistrationPort {
   private readonly registry: ToolRegistry;
+  private readonly index?: CodeIndexService;
   private readonly commandRunner = new ControlledCommandRunner(
     config.maxCommandTimeoutMs,
     config.maxCommandOutputBytes
@@ -275,10 +277,48 @@ export class ToolExecutor implements ToolRegistrationPort {
 
   constructor(
     private readonly workspaceManager: WorkspaceManager,
-    registry = new ToolRegistry(config.maxToolArgumentBytes, config.maxToolOutputBytes)
+    registryOrIndex: ToolRegistry | CodeIndexService = new ToolRegistry(
+      config.maxToolArgumentBytes,
+      config.maxToolOutputBytes
+    ),
+    index?: CodeIndexService
   ) {
-    this.registry = registry;
+    if (registryOrIndex instanceof ToolRegistry) {
+      this.registry = registryOrIndex;
+      this.index = index;
+    } else {
+      this.registry = new ToolRegistry(config.maxToolArgumentBytes, config.maxToolOutputBytes);
+      this.index = registryOrIndex;
+    }
     this.registerBuiltins();
+  }
+
+  async indexRepository(projectId: string, workspace: string): Promise<void> {
+    await this.index?.build(projectId, workspace);
+  }
+
+  searchSymbols(projectId: string, query: string) {
+    return this.index?.searchSymbols(projectId, query) ?? [];
+  }
+
+  searchFiles(projectId: string, query: string) {
+    return this.index?.searchFiles(projectId, query) ?? [];
+  }
+
+  findReferences(projectId: string, name: string) {
+    return this.index?.findReferences(projectId, name) ?? [];
+  }
+
+  findCallers(projectId: string, callee: string) {
+    return this.index?.findCallers(projectId, callee) ?? [];
+  }
+
+  findCallees(projectId: string, caller: string) {
+    return this.index?.findCallees(projectId, caller) ?? [];
+  }
+
+  async searchSemantic(projectId: string, query: string) {
+    return this.index?.searchSemantic(projectId, query) ?? { mode: 'lexical' as const, items: [] };
   }
 
   register(definition: ToolDefinition, handler: ToolHandler): void {

@@ -1,5 +1,7 @@
 # 分支合并与适配器接入指南
 
+Repository index tools included in the integration contract: `index_repository`, `search_files`, `search_symbols`, `find_references`, `find_callers`, `find_callees`, `search_semantic`.
+
 本文用于把 `feature/harness-runtime` 合并到集成分支，以及后续接入角色三代码索引、角色四
 模型网关和角色五质量门禁。
 

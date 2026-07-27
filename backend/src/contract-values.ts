@@ -54,7 +54,14 @@ export const toolNames = [
   'write_file',
   'run_command',
   'git_diff',
-  'git_status'
+  'git_status',
+  'index_repository',
+  'search_files',
+  'search_symbols',
+  'find_references',
+  'find_callers',
+  'find_callees',
+  'search_semantic'
 ] as const;
 
 export const toolCallStatuses = ['PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELLED'] as const;

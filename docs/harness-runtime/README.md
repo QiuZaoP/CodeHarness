@@ -1,5 +1,7 @@
 # Harness Runtime 合并交接
 
+Repository index tool names: `index_repository`, `search_files`, `search_symbols`, `find_references`, `find_callers`, `find_callees`, `search_semantic`.
+
 本目录是角色二后端 Harness 的正式合并交接包，面向负责 `develop`、跨角色集成和代码审阅的
 协作者。原先分散的生命周期、持久化、工具、工作区、上下文、变更和质量文档已合并为三份：
 

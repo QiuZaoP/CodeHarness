@@ -21,7 +21,11 @@ const publicSchemaRoots = [
   'verificationResult',
   'taskReport',
   'runtimeMetrics',
-  'errorResponse'
+  'errorResponse',
+  'toolCall',
+  'ToolCall',
+  'indexQueryResult',
+  'SemanticSearchResult'
 ] as const;
 
 const schema = (name: string): JsonObject => ({ $ref: `#/components/schemas/${name}` });

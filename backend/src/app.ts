@@ -26,6 +26,8 @@ import { eventCursor, SseConnection } from './sse.js';
 import type { ChangeDecision } from './types.js';
 import { loggerOptions } from './logger.js';
 import { taskStatuses } from './contract-values.js';
+import { CodeIndexService } from './code-index.js';
+import { TreeSitterCodeIndex } from './adapters/tree-sitter-code-index.js';
 
 interface ProjectBody {
   name: string;
@@ -80,7 +82,8 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
   const database = dependencies.database ?? new AppDatabase();
   const workspaceManager = dependencies.workspaceManager ?? new WorkspaceManager();
   const broker = new EventBroker();
-  const tools = dependencies.toolExecutor ?? new ToolExecutor(workspaceManager);
+  const nativeCodeIndex = new CodeIndexService(database);
+  const tools = dependencies.toolExecutor ?? new ToolExecutor(workspaceManager, nativeCodeIndex);
   const modelGateway = new GuardedModelGateway(configuredModelGateway, config.maxModelTimeoutMs);
   const textCodeIndex = new TextCodeIndex(
     (projectId) => database.getProject(projectId)?.sourcePath,
@@ -91,7 +94,7 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
   );
   const codeIndex = dependencies.codeIndex
     ? new FallbackCodeIndex(dependencies.codeIndex, textCodeIndex)
-    : textCodeIndex;
+    : new TreeSitterCodeIndex(database, nativeCodeIndex, textCodeIndex);
   const budgetManager = new BudgetManager({
     maxSteps: config.maxTaskSteps,
     maxToolCalls: config.maxTaskToolCalls,
@@ -230,6 +233,7 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
         await workspaceManager.removeProject(id);
         throw error;
       }
+      await nativeCodeIndex.build(id, imported.projectPath);
       return reply.code(201).send(database.getProject(id));
     }
   );
@@ -285,6 +289,48 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
         .map(({ path: filePath, line, preview }) => ({ path: filePath, line, preview }));
     }
   );
+
+  app.get<{
+    Params: { projectId: string };
+    Querystring: { q: string };
+  }>('/api/v1/projects/:projectId/symbols', async (request) => {
+    if (!database.getProject(request.params.projectId)) {
+      throw new AppError('NOT_FOUND', 'Project not found', request.params, 404);
+    }
+    return nativeCodeIndex.searchSymbols(request.params.projectId, request.query.q);
+  });
+
+  app.get<{
+    Params: { projectId: string };
+    Querystring: { name: string };
+  }>('/api/v1/projects/:projectId/references', async (request) => {
+    if (!database.getProject(request.params.projectId)) {
+      throw new AppError('NOT_FOUND', 'Project not found', request.params, 404);
+    }
+    return nativeCodeIndex.findReferences(request.params.projectId, request.query.name);
+  });
+
+  app.get<{
+    Params: { projectId: string };
+    Querystring: { symbol: string; direction?: 'callers' | 'callees' };
+  }>('/api/v1/projects/:projectId/calls', async (request) => {
+    if (!database.getProject(request.params.projectId)) {
+      throw new AppError('NOT_FOUND', 'Project not found', request.params, 404);
+    }
+    return request.query.direction === 'callees'
+      ? nativeCodeIndex.findCallees(request.params.projectId, request.query.symbol)
+      : nativeCodeIndex.findCallers(request.params.projectId, request.query.symbol);
+  });
+
+  app.get<{
+    Params: { projectId: string };
+    Querystring: { q: string };
+  }>('/api/v1/projects/:projectId/semantic-search', async (request) => {
+    if (!database.getProject(request.params.projectId)) {
+      throw new AppError('NOT_FOUND', 'Project not found', request.params, 404);
+    }
+    return nativeCodeIndex.searchSemantic(request.params.projectId, request.query.q);
+  });
 
   app.post<{ Body: SessionBody }>(
     '/api/v1/sessions',

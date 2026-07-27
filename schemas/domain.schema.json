@@ -55,7 +55,14 @@
         "write_file",
         "run_command",
         "git_diff",
-        "git_status"
+        "git_status",
+        "index_repository",
+        "search_files",
+        "search_symbols",
+        "find_references",
+        "find_callers",
+        "find_callees",
+        "search_semantic"
       ]
     },
     "toolCallStatus": {
@@ -356,10 +363,139 @@
       "type": "object",
       "required": ["name", "arguments"],
       "properties": {
-        "name": { "$ref": "#/$defs/toolName" },
+        "name": {
+          "type": "string",
+          "enum": [
+            "list_files",
+            "search_text",
+            "search_symbol",
+            "read_file",
+            "read_ast",
+            "apply_patch",
+            "write_file",
+            "run_command",
+            "git_diff",
+            "git_status",
+            "index_repository",
+            "search_files",
+            "search_symbols",
+            "find_references",
+            "find_callers",
+            "find_callees",
+            "search_semantic"
+          ]
+        },
         "arguments": { "type": "object", "additionalProperties": true }
       },
+      "allOf": [
+        {
+          "if": { "properties": { "name": { "const": "index_repository" } } },
+          "then": {}
+        },
+        {
+          "if": { "properties": { "name": { "const": "search_files" } } },
+          "then": {}
+        },
+        {
+          "if": { "properties": { "name": { "const": "search_symbols" } } },
+          "then": {}
+        },
+        {
+          "if": { "properties": { "name": { "const": "find_references" } } },
+          "then": {}
+        },
+        {
+          "if": { "properties": { "name": { "const": "find_callers" } } },
+          "then": {}
+        },
+        {
+          "if": { "properties": { "name": { "const": "find_callees" } } },
+          "then": {}
+        },
+        {
+          "if": { "properties": { "name": { "const": "search_semantic" } } },
+          "then": {}
+        }
+      ],
       "additionalProperties": false
+    },
+    "indexQueryResult": {
+      "type": "object",
+      "required": ["path", "line", "entityType", "summary"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "line": { "type": "integer", "minimum": 1 },
+        "entityType": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "ToolCall": {
+      "type": "object",
+      "required": ["name", "arguments"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "enum": [
+            "list_files",
+            "search_text",
+            "search_symbol",
+            "read_file",
+            "read_ast",
+            "apply_patch",
+            "write_file",
+            "run_command",
+            "git_diff",
+            "git_status",
+            "index_repository",
+            "search_files",
+            "search_symbols",
+            "find_references",
+            "find_callers",
+            "find_callees",
+            "search_semantic"
+          ]
+        },
+        "arguments": { "type": "object", "additionalProperties": true }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "name": { "const": "index_repository" } } },
+          "then": {}
+        },
+        {
+          "if": { "properties": { "name": { "const": "search_files" } } },
+          "then": {}
+        },
+        {
+          "if": { "properties": { "name": { "const": "search_symbols" } } },
+          "then": {}
+        },
+        {
+          "if": { "properties": { "name": { "const": "find_references" } } },
+          "then": {}
+        },
+        {
+          "if": { "properties": { "name": { "const": "find_callers" } } },
+          "then": {}
+        },
+        {
+          "if": { "properties": { "name": { "const": "find_callees" } } },
+          "then": {}
+        },
+        {
+          "if": { "properties": { "name": { "const": "search_semantic" } } },
+          "then": {}
+        }
+      ]
+    },
+    "SemanticSearchResult": {
+      "type": "object",
+      "required": ["mode", "items"],
+      "properties": {
+        "mode": { "type": "string", "enum": ["vector", "lexical"] },
+        "items": { "type": "array", "items": { "$ref": "#/$defs/indexQueryResult" } }
+      }
     },
     "toolDefinition": {
       "type": "object",
