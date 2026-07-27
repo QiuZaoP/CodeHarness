@@ -1,5 +1,3 @@
-import { AppError } from '../errors.js';
-import { assertDomainContract } from '../event-contract.js';
 import type {
   DecisionRequest,
   DecisionResponse,
@@ -11,6 +9,9 @@ import type {
   SummaryRequest,
   SummaryResponse
 } from '../ports/model-gateway.js';
+import { ModelGatewayError } from '../model-gateway/errors.js';
+import { parseModelDecision } from '../model-gateway/structured.js';
+import { withTimeout } from '../model-gateway/http.js';
 
 export class GuardedModelGateway implements ModelGateway {
   constructor(
@@ -28,11 +29,11 @@ export class GuardedModelGateway implements ModelGateway {
       signal,
       (controlledSignal) => this.inner.decide(request, controlledSignal, onStreamEvent),
       (response) => {
-        assertDomainContract('modelDecision', response.decision);
+        parseModelDecision(JSON.stringify(response.decision));
         this.assertIdentity(response.model, response.provider);
         this.assertUsage(response.usage, true);
         if (!Number.isFinite(response.durationMs) || response.durationMs < 0) {
-          throw new Error('Model duration must be a non-negative finite number');
+          throw new Error('Model duration is invalid');
         }
       }
     );
@@ -80,88 +81,46 @@ export class GuardedModelGateway implements ModelGateway {
     action: (signal: AbortSignal) => Promise<T>,
     validate: (result: T) => void
   ): Promise<T> {
-    if (externalSignal.aborted) throw externalSignal.reason;
-    const controller = new AbortController();
-    let timedOut = false;
-    const onAbort = () => controller.abort(externalSignal.reason);
-    externalSignal.addEventListener('abort', onAbort, { once: true });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      controller.abort(
-        new AppError(
-          'MODEL_ERROR',
-          `Model ${operation} timed out`,
-          { category: 'TIMEOUT', timeoutMs: this.timeoutMs },
-          504
-        )
-      );
-    }, this.timeoutMs);
     try {
-      const result = await Promise.race([
-        action(controller.signal),
-        new Promise<never>((_, reject) => {
-          controller.signal.addEventListener('abort', () => reject(controller.signal.reason), {
-            once: true
-          });
-        })
-      ]);
+      const result = await withTimeout(action, externalSignal, this.timeoutMs);
       try {
         validate(result);
       } catch (error) {
-        throw new AppError(
-          'MODEL_ERROR',
+        throw new ModelGatewayError(
           `Model ${operation} returned an invalid response`,
+          'INVALID_RESPONSE',
           {
-            category: 'INVALID_RESPONSE',
-            cause: error instanceof Error ? error.message : String(error)
+            cause: error instanceof Error ? error.message : 'invalid response'
           },
           502
         );
       }
       return result;
     } catch (error) {
+      if (error instanceof ModelGatewayError) throw error;
       if (externalSignal.aborted) throw externalSignal.reason;
-      if (timedOut) {
-        throw new AppError(
-          'MODEL_ERROR',
-          `Model ${operation} timed out`,
-          { category: 'TIMEOUT', timeoutMs: this.timeoutMs },
-          504
-        );
-      }
-      if (error instanceof AppError && error.code === 'MODEL_ERROR') throw error;
-      throw new AppError(
-        'MODEL_ERROR',
+      throw new ModelGatewayError(
         `Model ${operation} failed`,
+        'PROVIDER',
         {
-          category: 'PROVIDER',
-          cause: error instanceof Error ? error.message : String(error)
+          cause: error instanceof Error ? error.message : 'unknown failure'
         },
         502
       );
-    } finally {
-      clearTimeout(timer);
-      externalSignal.removeEventListener('abort', onAbort);
     }
   }
 
   private assertIdentity(model: string, provider: string): void {
-    if (!model.trim() || !provider.trim()) {
-      throw new Error('Model and provider identifiers must not be empty');
-    }
+    if (!model.trim() || !provider.trim())
+      throw new Error('Model and provider identifiers are required');
   }
 
   private assertUsage(usage: Partial<ModelUsage>, requireOutput: boolean): void {
-    if (!Number.isFinite(usage.inputTokens) || usage.inputTokens! < 0) {
-      throw new Error('Model usage inputTokens must be a non-negative finite number');
-    }
-    if (requireOutput && (!Number.isFinite(usage.outputTokens) || usage.outputTokens! < 0)) {
-      throw new Error('Model usage outputTokens must be a non-negative finite number');
-    }
-    for (const [name, value] of Object.entries(usage)) {
-      if (value !== undefined && (!Number.isFinite(value) || value < 0)) {
-        throw new Error(`Model usage ${name} must be a non-negative finite number`);
-      }
-    }
+    if (!Number.isFinite(usage.inputTokens) || usage.inputTokens! < 0)
+      throw new Error('inputTokens is invalid');
+    if (requireOutput && (!Number.isFinite(usage.outputTokens) || usage.outputTokens! < 0))
+      throw new Error('outputTokens is invalid');
+    if (usage.cost !== undefined && (!Number.isFinite(usage.cost) || usage.cost < 0))
+      throw new Error('cost is invalid');
   }
 }

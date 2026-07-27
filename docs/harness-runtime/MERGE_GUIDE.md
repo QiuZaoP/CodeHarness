@@ -1,5 +1,7 @@
 # 分支合并与适配器接入指南
 
+Model gateway configuration variables: `DEEPSEEK_BASE_URL`, `DEEPSEEK_CHAT_MODEL`, `DEEPSEEK_SUMMARY_MODEL`, `MODEL_MAX_RETRIES`, `MODEL_RETRY_BASE_DELAY_MS`, `MODEL_CIRCUIT_FAILURE_THRESHOLD`, `MODEL_CIRCUIT_COOLDOWN_MS`, `MODEL_MAX_RESPONSE_BYTES`, `MODEL_MAX_OUTPUT_TOKENS`, `DEEPSEEK_INPUT_PRICE_PER_MILLION`, `DEEPSEEK_OUTPUT_PRICE_PER_MILLION`.
+
 Repository index tools included in the integration contract: `index_repository`, `search_files`, `search_symbols`, `find_references`, `find_callers`, `find_callees`, `search_semantic`.
 
 本文用于把 `feature/harness-runtime` 合并到集成分支，以及后续接入角色三代码索引、角色四

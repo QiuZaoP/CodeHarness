@@ -13,6 +13,7 @@ import { ToolExecutor } from './tools.js';
 import type { ToolRegistrationPort } from './ports/tool-registry.js';
 import { TaskScheduler } from './task-scheduler.js';
 import { FakeModelGateway } from './adapters/fake-model-gateway.js';
+import { DeepSeekModelGateway } from './adapters/deepseek-model-gateway.js';
 import { GuardedModelGateway } from './adapters/guarded-model-gateway.js';
 import { TextCodeIndex } from './adapters/text-code-index.js';
 import { FallbackCodeIndex } from './adapters/fallback-code-index.js';
@@ -69,7 +70,8 @@ export interface AppDependencies {
 
 export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
   const configuredModelGateway =
-    dependencies.modelGateway ?? (config.mockMode ? new FakeModelGateway() : undefined);
+    dependencies.modelGateway ??
+    (config.mockMode ? new FakeModelGateway() : DeepSeekModelGateway.fromEnvironment());
   if (!configuredModelGateway) {
     throw new AppError(
       'MODEL_ERROR',
