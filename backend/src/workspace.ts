@@ -13,6 +13,7 @@ const ignoredSourceEntries = new Set([
   '.git',
   '.data',
   '.next',
+  '.pytest_run_all',
   '.venv',
   '__pycache__',
   'build',
@@ -22,6 +23,9 @@ const ignoredSourceEntries = new Set([
   'target',
   'venv'
 ]);
+
+// Generated local databases are not source files and can be large or locked while the app runs.
+const ignoredSourceFileExtensions = new Set(['.db', '.sqlite', '.sqlite3']);
 
 interface ManifestEntry {
   kind: 'file' | 'directory';
@@ -627,6 +631,9 @@ export class WorkspaceManager {
           throw new AppError('WORKSPACE_ERROR', 'Source contains an unsupported special file', {
             path: normalizedRelative(relativePath)
           });
+        }
+        if (ignoredSourceFileExtensions.has(path.extname(entry.name).toLowerCase())) {
+          continue;
         }
         if (fileCount + 1 > this.options.maxImportFiles) {
           throw new AppError('WORKSPACE_ERROR', 'Source exceeds the import file count limit', {

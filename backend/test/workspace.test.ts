@@ -164,6 +164,21 @@ describe('task workspace isolation', () => {
     expect(await fs.stat(recursiveRoot).catch(() => undefined)).toBeUndefined();
   });
 
+  it('ignores pytest run artifacts while importing a source directory', async () => {
+    const { source, manager } = await fixture();
+    const artifact = path.join(source, '.pytest_run_all', 'locked-artifact');
+    await fs.mkdir(artifact, { recursive: true });
+    await fs.writeFile(path.join(artifact, 'result.txt'), 'temporary test output\n');
+    await fs.writeFile(path.join(source, 'cache.sqlite3'), Buffer.alloc(6 * 1024 * 1024));
+
+    const imported = await manager.importProject(source, randomUUID());
+
+    expect(imported.metadata.fileCount).toBe(2);
+    expect(
+      await fs.stat(path.join(imported.projectPath, 'source-metadata', 'manifest.json'))
+    ).toBeDefined();
+  });
+
   it('captures source Git revision, branch, and dirty state without changing the source', async () => {
     const { root, source, manager } = await fixture();
     await run('git', ['init', '--quiet'], { cwd: source });

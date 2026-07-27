@@ -13,7 +13,8 @@ import type {
   WorkspaceSnapshot
 } from '../types';
 
-const configuredApiBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '');
+const configuredApiBaseUrl =
+  import.meta.env.MODE === 'test' ? '' : import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '');
 const delay = (milliseconds: number) =>
   new Promise((resolve) => globalThis.setTimeout(resolve, milliseconds));
 

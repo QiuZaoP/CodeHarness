@@ -1,6 +1,7 @@
 import type { WorkspaceEvent } from '../types';
 
-const configuredApiBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '');
+const configuredApiBaseUrl =
+  import.meta.env.MODE === 'test' ? '' : import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '');
 const eventTypes: WorkspaceEvent['type'][] = [
   'task.created',
   'task.state_changed',

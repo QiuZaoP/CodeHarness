@@ -309,6 +309,14 @@ kbd {
   cursor: pointer;
 }
 
+.field__error {
+  display: block;
+  margin-top: 6px;
+  color: #e77b7b;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .project-menu__item:hover,
 .project-menu__import:hover {
   background: var(--surface-4);

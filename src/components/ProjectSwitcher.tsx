@@ -9,6 +9,7 @@ export function ProjectSwitcher() {
   const [modalOpen, setModalOpen] = useState(false);
   const [path, setPath] = useState('C:/Users/demo/projects/');
   const [submitting, setSubmitting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -34,10 +35,13 @@ export function ProjectSwitcher() {
       return;
     }
     setSubmitting(true);
+    setImportError(null);
     try {
       await importProject(path.trim());
       setModalOpen(false);
       setMenuOpen(false);
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : '项目导入失败，请检查目录权限。');
     } finally {
       setSubmitting(false);
     }
@@ -122,6 +126,11 @@ export function ProjectSwitcher() {
             autoFocus
             placeholder="C:/Users/name/projects/repository"
           />
+          {importError ? (
+            <span className="field__error" role="alert">
+              {importError}
+            </span>
+          ) : null}
         </label>
       </Modal>
     </>

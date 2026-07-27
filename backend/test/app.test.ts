@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AppDatabase } from '../src/db.js';
 import { buildApp } from '../src/app.js';
+import { FakeModelGateway } from '../src/adapters/fake-model-gateway.js';
 import { WorkspaceManager } from '../src/workspace.js';
 
 const resources: Array<{ close: () => void | Promise<void> }> = [];
@@ -37,7 +38,11 @@ describe('backend API', () => {
     const db = new AppDatabase(path.join(directory, 'test.sqlite'));
     resources.push(db);
     const workspaceManager = new WorkspaceManager({ root: path.join(directory, 'workspaces') });
-    const app = buildApp({ database: db, workspaceManager });
+    const app = buildApp({
+      database: db,
+      workspaceManager,
+      modelGateway: new FakeModelGateway()
+    });
     resources.push(app);
 
     const health = await app.inject({
@@ -307,7 +312,8 @@ describe('backend API', () => {
     resources.push(db);
     const app = buildApp({
       database: db,
-      workspaceManager: new WorkspaceManager({ root: path.join(directory, 'workspaces') })
+      workspaceManager: new WorkspaceManager({ root: path.join(directory, 'workspaces') }),
+      modelGateway: new FakeModelGateway()
     });
     resources.push(app);
 
