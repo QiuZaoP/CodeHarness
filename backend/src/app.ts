@@ -190,6 +190,28 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
           errorBody(new AppError('VALIDATION_ERROR', 'Request validation failed', error.validation))
         );
     }
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'statusCode' in error &&
+      typeof error.statusCode === 'number' &&
+      error.statusCode >= 400 &&
+      error.statusCode < 500
+    ) {
+      const requestError = error as { statusCode: number; code?: string; message?: string };
+      return reply
+        .code(requestError.statusCode)
+        .send(
+          errorBody(
+            new AppError(
+              'VALIDATION_ERROR',
+              requestError.message || 'Invalid request',
+              requestError.code ? { parserCode: requestError.code } : undefined,
+              requestError.statusCode
+            )
+          )
+        );
+    }
     app.log.error(error);
     return reply.code(500).send(errorBody(error));
   });

@@ -232,13 +232,11 @@ export function createWorkspaceApi(apiBaseUrl = configuredApiBaseUrl) {
       throw new Error(`Mock request was not handled: ${path}`);
     }
 
-    const response = await fetch(`${apiBaseUrl}${path}`, {
-      headers: {
-        'Content-Type': 'application/json',
-        ...init?.headers
-      },
-      ...init
-    });
+    const headers = new Headers(init?.headers);
+    if (init?.body !== undefined && !headers.has('Content-Type')) {
+      headers.set('Content-Type', 'application/json');
+    }
+    const response = await fetch(`${apiBaseUrl}${path}`, { ...init, headers });
 
     if (!response.ok) {
       const body = (await response.json().catch(() => null)) as {

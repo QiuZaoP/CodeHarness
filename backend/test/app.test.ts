@@ -345,6 +345,15 @@ describe('backend API', () => {
     expect(invalidBody.statusCode).toBe(400);
     expect(invalidBody.json<{ error: { code: string } }>().error.code).toBe('VALIDATION_ERROR');
 
+    const emptyJsonBody = await app.inject({
+      method: 'POST',
+      url: '/api/v1/projects',
+      headers: { 'content-type': 'application/json' },
+      payload: ''
+    });
+    expect(emptyJsonBody.statusCode).toBe(400);
+    expect(emptyJsonBody.json<{ error: { code: string } }>().error.code).toBe('VALIDATION_ERROR');
+
     const invalidParams = await app.inject({
       method: 'GET',
       url: '/api/v1/projects/not-a-uuid'

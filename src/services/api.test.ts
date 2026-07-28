@@ -109,7 +109,7 @@ describe('workspaceApi real backend contract', () => {
   });
 
   it('persists messages and uses the resume and optimistic review endpoints', async () => {
-    const calls: Array<{ path: string; method: string; body?: unknown }> = [];
+    const calls: Array<{ path: string; method: string; body?: unknown; contentType?: string }> = [];
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -117,7 +117,8 @@ describe('workspaceApi real backend contract', () => {
         calls.push({
           path: url.pathname,
           method: init?.method || 'GET',
-          body: init?.body ? JSON.parse(String(init.body)) : undefined
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+          contentType: new Headers(init?.headers).get('Content-Type') || undefined
         });
         if (url.pathname.endsWith('/messages')) {
           return jsonResponse(
@@ -184,22 +185,26 @@ describe('workspaceApi real backend contract', () => {
         {
           path: '/api/v1/sessions/session-1/messages',
           method: 'POST',
-          body: { content: 'Fix login' }
+          body: { content: 'Fix login' },
+          contentType: 'application/json'
         },
         {
           path: '/api/v1/tasks/task-1/resume',
           method: 'POST',
-          body: undefined
+          body: undefined,
+          contentType: undefined
         },
         {
           path: '/api/v1/tasks/task-1/changes/change-1',
           method: 'PATCH',
-          body: { decision: 'ACCEPTED', expectedVersion: 3 }
+          body: { decision: 'ACCEPTED', expectedVersion: 3 },
+          contentType: 'application/json'
         },
         {
           path: '/api/v1/tasks/task-1/apply',
           method: 'POST',
-          body: undefined
+          body: undefined,
+          contentType: undefined
         }
       ])
     );
