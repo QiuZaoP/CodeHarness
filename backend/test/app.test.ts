@@ -153,9 +153,6 @@ describe('backend API', () => {
       ).json()
     ).toEqual([expect.objectContaining({ id: task.id })]);
 
-    const runResponse = await app.inject({ method: 'POST', url: `/api/v1/tasks/${task.id}/run` });
-    expect(runResponse.statusCode).toBe(202);
-    expect(runResponse.json<{ status: string }>().status).toBe('CREATED');
     await waitForTask(db, task.id, 'READY_FOR_REVIEW');
     expect(db.getEvents(task.id).map((event) => event.type)).toContain('tool.completed');
     expect(db.getEvents(task.id).every((event) => event.schemaVersion === '1.0.0')).toBe(true);

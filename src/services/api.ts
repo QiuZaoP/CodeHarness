@@ -17,6 +17,7 @@ import type {
 
 const configuredApiBaseUrl =
   import.meta.env.MODE === 'test' ? '' : import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '');
+const requestTimeoutMs = 30_000;
 const delay = (milliseconds: number) =>
   new Promise((resolve) => globalThis.setTimeout(resolve, milliseconds));
 
@@ -236,7 +237,23 @@ export function createWorkspaceApi(apiBaseUrl = configuredApiBaseUrl) {
     if (init?.body !== undefined && !headers.has('Content-Type')) {
       headers.set('Content-Type', 'application/json');
     }
-    const response = await fetch(`${apiBaseUrl}${path}`, { ...init, headers });
+    const controller = new AbortController();
+    const timeout = globalThis.setTimeout(() => controller.abort(), requestTimeoutMs);
+    let response: Response;
+    try {
+      response = await fetch(`${apiBaseUrl}${path}`, {
+        ...init,
+        headers,
+        signal: init?.signal ?? controller.signal
+      });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw new Error(`Request timed out after ${requestTimeoutMs / 1000} seconds`);
+      }
+      throw error;
+    } finally {
+      globalThis.clearTimeout(timeout);
+    }
 
     if (!response.ok) {
       const body = (await response.json().catch(() => null)) as {

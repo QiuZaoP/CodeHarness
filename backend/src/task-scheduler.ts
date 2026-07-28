@@ -54,7 +54,10 @@ export class TaskScheduler {
     for (const task of this.database.getTasksByStatus(runningStatuses)) {
       if (this.active.has(task.id)) continue;
       const lease = this.database.getTaskLease(task.id);
-      if (task.status === 'CREATED' && !lease) continue;
+      if (task.status === 'CREATED' && !lease) {
+        recovered.push(this.start(task.id));
+        continue;
+      }
       if (lease && lease.expiresAt > now) continue;
       if (lease) this.database.releaseExpiredTaskLease(task.id, now);
       if (task.controlRequest === 'CANCEL') recovered.push(this.harness.cancel(task.id));

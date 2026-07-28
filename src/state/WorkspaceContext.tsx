@@ -419,12 +419,6 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
             }
           : current
       );
-      if (result.task) {
-        await workspaceApi.runTask(result.task.id).catch((caught: unknown) => {
-          setError(caught instanceof Error ? caught.message : '任务启动失败');
-          throw caught;
-        });
-      }
     },
     [snapshot?.activeProjectId, snapshot?.activeSessionId]
   );

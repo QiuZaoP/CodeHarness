@@ -268,6 +268,21 @@ function changeDecisions(filePath = 'generated.txt') {
 }
 
 describe('task lifecycle scheduler', () => {
+  it('starts a persisted created task during recovery', async () => {
+    const { database, harness, task } = await fixture({ blockFirstList: false });
+    const recoveringScheduler = new TaskScheduler(database, harness, {
+      ownerId: randomUUID()
+    });
+
+    expect(recoveringScheduler.recoverInterrupted()).toEqual([
+      expect.objectContaining({ id: task.id, status: 'CREATED' })
+    ]);
+    await recoveringScheduler.waitForIdle(task.id);
+    await recoveringScheduler.shutdown();
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+  });
+
   it('stops at precheck when the isolated workspace already contains user changes', async () => {
     const { database, scheduler, task, tools } = await fixture({ blockFirstList: false });
     await fs.writeFile(path.join(task.workspacePath, 'README.md'), '# User change\n');

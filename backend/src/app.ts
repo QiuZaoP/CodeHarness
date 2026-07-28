@@ -492,6 +492,8 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
     async (request, reply) => {
       const { projectId, sessionId, goal } = request.body;
       const task = await harness.createTask(projectId, sessionId, goal);
+      // Start immediately so a lost client response cannot leave a persisted task in CREATED.
+      scheduler.start(task.id);
       return reply.code(201).send(task);
     }
   );
