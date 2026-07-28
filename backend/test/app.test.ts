@@ -155,6 +155,29 @@ describe('backend API', () => {
 
     await waitForTask(db, task.id, 'READY_FOR_REVIEW');
     expect(db.getEvents(task.id).map((event) => event.type)).toContain('tool.completed');
+    const completionEvent = db.getEvents(task.id).find((event) => event.type === 'task.completed');
+    const assistantMessage = db
+      .getMessages(session.id)
+      .find((message) => message.role === 'ASSISTANT');
+    expect(assistantMessage).toMatchObject({
+      content: 'Inspected the project and completed baseline verification'
+    });
+    expect(completionEvent?.payload).toMatchObject({
+      messageId: assistantMessage?.id,
+      summary: assistantMessage?.content
+    });
+    const completedMessagesResponse = await app.inject({
+      method: 'GET',
+      url: `/api/v1/sessions/${session.id}/messages`
+    });
+    expect(completedMessagesResponse.json()).toEqual([
+      expect.objectContaining({ role: 'USER' }),
+      expect.objectContaining({
+        id: assistantMessage?.id,
+        role: 'ASSISTANT',
+        content: assistantMessage?.content
+      })
+    ]);
     expect(db.getEvents(task.id).every((event) => event.schemaVersion === '1.0.0')).toBe(true);
     expect(db.getTask(task.id)?.plan?.steps).toHaveLength(2);
     expect(db.getTaskRun(task.id)).toMatchObject({
@@ -265,11 +288,16 @@ describe('backend API', () => {
     const eventResponse = await fetch(
       `http://127.0.0.1:${address.port}/api/v1/tasks/${task.id}/events`,
       {
-        headers: { 'Last-Event-ID': String(reconnectAfter) },
+        headers: {
+          'Last-Event-ID': String(reconnectAfter),
+          Origin: 'http://localhost:5173'
+        },
         signal: streamAbort.signal
       }
     );
     expect(eventResponse.status).toBe(200);
+    expect(eventResponse.headers.get('access-control-allow-origin')).toBe('http://localhost:5173');
+    expect(eventResponse.headers.get('vary')).toContain('Origin');
     const eventReader = eventResponse.body!.getReader();
     const replayChunk = await eventReader.read();
     const replayText = new TextDecoder().decode(replayChunk.value);

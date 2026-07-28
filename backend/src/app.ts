@@ -662,13 +662,23 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
     async (request, reply) => {
       const task = harness.getTask(request.params.taskId);
       const after = eventCursor(request.query.after, request.headers['last-event-id']);
+      const requestOrigin = request.headers.origin;
+      const corsHeaders =
+        requestOrigin &&
+        (config.corsOrigins.includes('*') || config.corsOrigins.includes(requestOrigin))
+          ? {
+              'Access-Control-Allow-Origin': requestOrigin,
+              Vary: 'Origin'
+            }
+          : {};
       reply.hijack();
       reply.raw.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
         'X-Accel-Buffering': 'no',
-        'x-request-id': request.id
+        'x-request-id': request.id,
+        ...corsHeaders
       });
       const stream = new SseConnection(reply.raw, after, config.sseMaxPendingEvents);
       let replaying = false;

@@ -169,9 +169,15 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
 
         const nextStatus = statusFromEvent(event);
         if (nextStatus) {
+          const completionMessageId =
+            event.type === 'task.completed' && typeof event.payload.messageId === 'string'
+              ? event.payload.messageId
+              : undefined;
           const terminalMessage =
             event.type === 'task.completed'
-              ? 'Task completed. Review the generated changes before applying them.'
+              ? typeof event.payload.summary === 'string' && event.payload.summary.trim()
+                ? event.payload.summary
+                : 'Task completed. Review the generated changes before applying them.'
               : event.type === 'task.failed'
                 ? `Task failed: ${String(event.payload.message || 'Unknown error')}`
                 : event.type === 'task.cancelled'
@@ -179,6 +185,14 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
                   : event.type === 'task.paused'
                     ? 'Task is paused. You can resume it when ready.'
                     : undefined;
+          const terminalMessageId = completionMessageId ?? `event-${event.id}`;
+          const activeMessages = current.activeSessionId
+            ? current.messages[current.activeSessionId] || []
+            : [];
+          const shouldAppendMessage =
+            terminalMessage !== undefined &&
+            current.activeSessionId !== '' &&
+            !activeMessages.some((message) => message.id === terminalMessageId);
           return {
             ...current,
             task: { ...current.task, status: nextStatus },
@@ -190,21 +204,20 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
                   }
                 : session
             ),
-            messages:
-              terminalMessage && current.activeSessionId
-                ? {
-                    ...current.messages,
-                    [current.activeSessionId]: [
-                      ...(current.messages[current.activeSessionId] || []),
-                      {
-                        id: `event-${event.id}`,
-                        role: 'assistant',
-                        content: terminalMessage,
-                        createdAt: currentTime()
-                      }
-                    ]
-                  }
-                : current.messages
+            messages: shouldAppendMessage
+              ? {
+                  ...current.messages,
+                  [current.activeSessionId]: [
+                    ...activeMessages,
+                    {
+                      id: terminalMessageId,
+                      role: 'assistant',
+                      content: terminalMessage,
+                      createdAt: currentTime()
+                    }
+                  ]
+                }
+              : current.messages
           };
         }
 

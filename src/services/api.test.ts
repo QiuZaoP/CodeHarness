@@ -55,6 +55,13 @@ describe('workspaceApi real backend contract', () => {
             role: 'USER',
             content: 'Fix login',
             createdAt: '2026-01-01T00:00:00.000Z'
+          },
+          {
+            id: 'message-2',
+            sessionId: 'session-1',
+            role: 'ASSISTANT',
+            content: 'Fixed login and verified the result.',
+            createdAt: '2026-01-01T00:01:00.000Z'
           }
         ]
       ],
@@ -97,6 +104,11 @@ describe('workspaceApi real backend contract', () => {
     );
     expect(snapshot.activeSessionId).toBe('session-1');
     expect(snapshot.messages['session-1']?.[0]?.role).toBe('user');
+    expect(snapshot.messages['session-1']?.[1]).toMatchObject({
+      id: 'message-2',
+      role: 'assistant',
+      content: 'Fixed login and verified the result.'
+    });
     expect(snapshot.task.status).toBe('READY_FOR_REVIEW');
     expect(snapshot.changes[0]).toMatchObject({
       id: 'change-1',

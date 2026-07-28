@@ -17,6 +17,7 @@ import type {
   FileChange,
   HarnessObservation,
   HarnessTurn,
+  Message,
   ModelDecision,
   StoredTask,
   RunState,
@@ -895,6 +896,15 @@ export class HarnessRunner {
     }
     await this.finalizeChanges(task);
     this.observeTurn(task.id, { status: 'SUCCEEDED', summary: decision.summary });
+    const completedAt = new Date().toISOString();
+    const completionMessage: Message = {
+      id: randomUUID(),
+      sessionId: task.sessionId,
+      role: 'ASSISTANT',
+      content: decision.summary,
+      createdAt: completedAt
+    };
+    this.dependencies.database.createMessage(completionMessage);
     const latestVerification = this.dependencies.database
       .getVerificationResults(task.id)
       .filter(({ status }) => status === 'PASSED')
@@ -903,6 +913,8 @@ export class HarnessRunner {
       {
         type: 'task.completed',
         payload: {
+          messageId: completionMessage.id,
+          summary: completionMessage.content,
           verification: {
             command: latestVerification!.command,
             code: latestVerification!.exitCode ?? 0

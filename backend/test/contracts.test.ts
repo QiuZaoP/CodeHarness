@@ -45,7 +45,11 @@ describe('public contract schemas', () => {
       },
       {
         type: 'task.completed',
-        payload: { verification: { command: 'npm test', code: 0 } }
+        payload: {
+          messageId: 'e2a69a67-71bc-4b46-8291-57b01c6c783b',
+          summary: 'Implemented the requested change and verified it',
+          verification: { command: 'npm test', code: 0 }
+        }
       },
       { type: 'task.failed', payload: { message: 'Model failed' } },
       { type: 'task.waiting_user', payload: { message: 'Confirm command' } },
