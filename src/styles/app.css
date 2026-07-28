@@ -317,6 +317,27 @@ kbd {
   line-height: 1.4;
 }
 
+.composer__file-input {
+  display: none;
+}
+
+.composer__reference-select {
+  max-width: 190px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  background: var(--surface-2);
+  font: inherit;
+  font-size: 12px;
+}
+
+.composer__error {
+  margin: 6px 12px 0;
+  color: #e77b7b;
+  font-size: 12px;
+}
+
 .project-menu__item:hover,
 .project-menu__import:hover {
   background: var(--surface-4);

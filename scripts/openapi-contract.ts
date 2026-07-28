@@ -9,6 +9,8 @@ const publicSchemaRoots = [
   'health',
   'projectCreate',
   'projectSummary',
+  'projectFiles',
+  'projectFileContent',
   'searchResult',
   'sessionCreate',
   'session',
@@ -168,6 +170,29 @@ export function createOpenApiDocument(): JsonObject {
           responses: {
             200: response('Text search results', array('searchResult')),
             ...errors(400, 404, 500)
+          }
+        }
+      },
+      '/api/v1/projects/{projectId}/files': {
+        get: {
+          operationId: 'listProjectFiles',
+          parameters: [idParameter('projectId')],
+          responses: {
+            200: response('Imported project file paths', schema('projectFiles')),
+            ...errors(400, 404, 500)
+          }
+        }
+      },
+      '/api/v1/projects/{projectId}/files/{filePath}': {
+        get: {
+          operationId: 'getProjectFile',
+          parameters: [
+            idParameter('projectId'),
+            { ...parameter('filePath', 'path', { type: 'string', minLength: 1 }), required: true }
+          ],
+          responses: {
+            200: response('Imported project text file', schema('projectFileContent')),
+            ...errors(400, 403, 404, 500)
           }
         }
       },

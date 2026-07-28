@@ -20,6 +20,7 @@ describe('workspaceApi real backend contract', () => {
         '/api/v1/projects',
         [{ id: 'project-1', name: 'demo', createdAt: '2026-01-01T00:00:00.000Z' }]
       ],
+      ['/api/v1/projects/project-1/files', { files: ['README.md', 'src/login.ts'] }],
       [
         '/api/v1/sessions?projectId=project-1',
         [
@@ -88,6 +89,12 @@ describe('workspaceApi real backend contract', () => {
     const snapshot = await createWorkspaceApi('http://api.test').getSnapshot();
 
     expect(snapshot.activeProjectId).toBe('project-1');
+    expect(snapshot.fileTree).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'README.md', type: 'file' }),
+        expect.objectContaining({ name: 'src', type: 'folder' })
+      ])
+    );
     expect(snapshot.activeSessionId).toBe('session-1');
     expect(snapshot.messages['session-1']?.[0]?.role).toBe('user');
     expect(snapshot.task.status).toBe('READY_FOR_REVIEW');

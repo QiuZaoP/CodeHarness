@@ -171,6 +171,28 @@
       },
       "additionalProperties": false
     },
+    "projectFiles": {
+      "type": "object",
+      "required": ["files"],
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      },
+      "additionalProperties": false
+    },
+    "projectFileContent": {
+      "type": "object",
+      "required": ["path", "content", "bytesRead", "truncated"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "content": { "type": "string" },
+        "bytesRead": { "type": "integer", "minimum": 0 },
+        "truncated": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
     "sessionCreate": {
       "type": "object",
       "required": ["projectId"],

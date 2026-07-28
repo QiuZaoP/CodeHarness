@@ -70,7 +70,7 @@ export function CodeViewer() {
             >
               <button
                 className="editor-tab__select"
-                onClick={() => openFile(path)}
+                onClick={() => void openFile(path)}
                 role="tab"
                 aria-selected={snapshot.activeFilePath === path}
               >

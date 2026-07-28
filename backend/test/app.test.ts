@@ -35,6 +35,9 @@ describe('backend API', () => {
     await fs.mkdir(source);
     await fs.writeFile(path.join(source, 'README.md'), '# Fixture\n');
     await fs.writeFile(path.join(source, 'AGENTS.md'), '# Repository rules\nKeep changes small.\n');
+    await fs.writeFile(path.join(source, '.env'), 'MODEL_API_KEY=secret\n');
+    await fs.mkdir(path.join(source, '.pytest_cache'));
+    await fs.writeFile(path.join(source, '.pytest_cache', 'state'), 'generated\n');
     const db = new AppDatabase(path.join(directory, 'test.sqlite'));
     resources.push(db);
     const workspaceManager = new WorkspaceManager({ root: path.join(directory, 'workspaces') });
@@ -82,6 +85,23 @@ describe('backend API', () => {
     expect(search.json()).toEqual([
       expect.objectContaining({ path: 'README.md', line: 1, preview: '# Fixture' })
     ]);
+    const filesResponse = await app.inject({
+      method: 'GET',
+      url: `/api/v1/projects/${project.id}/files`
+    });
+    expect(filesResponse.statusCode).toBe(200);
+    expect(filesResponse.json()).toEqual({ files: ['AGENTS.md', 'README.md'] });
+    const fileResponse = await app.inject({
+      method: 'GET',
+      url: `/api/v1/projects/${project.id}/files/README.md`
+    });
+    expect(fileResponse.statusCode).toBe(200);
+    expect(fileResponse.json()).toMatchObject({ path: 'README.md', content: '# Fixture\n' });
+    const excludedFile = await app.inject({
+      method: 'GET',
+      url: `/api/v1/projects/${project.id}/files/.env`
+    });
+    expect(excludedFile.statusCode).toBe(403);
 
     const sessionResponse = await app.inject({
       method: 'POST',

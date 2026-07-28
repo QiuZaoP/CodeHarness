@@ -26,34 +26,36 @@
 
 ## 2. 路由总表
 
-| 方法    | 路径                                        | 成功  | 请求/查询                   | 响应                   |
-| ------- | ------------------------------------------- | ----- | --------------------------- | ---------------------- |
-| `GET`   | `/api/health`                               | `200` | 无                          | `Health`               |
-| `GET`   | `/api/v1/openapi.json`                      | `200` | 无                          | OpenAPI JSON           |
-| `GET`   | `/api/v1/metrics`                           | `200` | 无                          | `RuntimeMetrics`       |
-| `GET`   | `/api/v1/projects`                          | `200` | 无                          | `Project[]`            |
-| `POST`  | `/api/v1/projects`                          | `201` | `ProjectCreate`             | `Project`              |
-| `GET`   | `/api/v1/projects/{projectId}`              | `200` | UUID path                   | `Project`              |
-| `GET`   | `/api/v1/projects/{projectId}/search`       | `200` | `q`、`limit?`               | `SearchResult[]`       |
-| `GET`   | `/api/v1/sessions`                          | `200` | `projectId?`                | `Session[]`            |
-| `POST`  | `/api/v1/sessions`                          | `201` | `SessionCreate`             | `Session`              |
-| `GET`   | `/api/v1/sessions/{sessionId}`              | `200` | UUID path                   | `Session`              |
-| `GET`   | `/api/v1/sessions/{sessionId}/messages`     | `200` | 无                          | `Message[]`            |
-| `POST`  | `/api/v1/sessions/{sessionId}/messages`     | `201` | `MessageCreate`             | `Message`              |
-| `GET`   | `/api/v1/tasks`                             | `200` | `projectId?`、`sessionId?`  | `Task[]`               |
-| `POST`  | `/api/v1/tasks`                             | `201` | `TaskCreate`                | `Task`                 |
-| `GET`   | `/api/v1/tasks/{taskId}`                    | `200` | UUID path                   | `Task`                 |
-| `GET`   | `/api/v1/tasks/{taskId}/changes`            | `200` | 无                          | `FileChange[]`         |
-| `PATCH` | `/api/v1/tasks/{taskId}/changes/{changeId}` | `200` | `ChangeDecisionUpdate`      | `FileChange`           |
-| `GET`   | `/api/v1/tasks/{taskId}/verifications`      | `200` | 无                          | `VerificationResult[]` |
-| `GET`   | `/api/v1/tasks/{taskId}/report`             | `200` | 无                          | `TaskReport`           |
-| `POST`  | `/api/v1/tasks/{taskId}/run`                | `202` | 无                          | `Task`                 |
-| `POST`  | `/api/v1/tasks/{taskId}/pause`              | `200` | 无                          | `Task`                 |
-| `POST`  | `/api/v1/tasks/{taskId}/resume`             | `202` | 无                          | `Task`                 |
-| `POST`  | `/api/v1/tasks/{taskId}/cancel`             | `200` | 无                          | `Task`                 |
-| `POST`  | `/api/v1/tasks/{taskId}/apply`              | `200` | 无                          | `Task`                 |
-| `POST`  | `/api/v1/tasks/{taskId}/rollback`           | `200` | 无                          | `Task`                 |
-| `GET`   | `/api/v1/tasks/{taskId}/events`             | `200` | `after?` 或 `Last-Event-ID` | SSE                    |
+| 方法    | 路径                                            | 成功  | 请求/查询                     | 响应                   |
+| ------- | ----------------------------------------------- | ----- | ----------------------------- | ---------------------- |
+| `GET`   | `/api/health`                                   | `200` | 无                            | `Health`               |
+| `GET`   | `/api/v1/openapi.json`                          | `200` | 无                            | OpenAPI JSON           |
+| `GET`   | `/api/v1/metrics`                               | `200` | 无                            | `RuntimeMetrics`       |
+| `GET`   | `/api/v1/projects`                              | `200` | 无                            | `Project[]`            |
+| `POST`  | `/api/v1/projects`                              | `201` | `ProjectCreate`               | `Project`              |
+| `GET`   | `/api/v1/projects/{projectId}`                  | `200` | UUID path                     | `Project`              |
+| `GET`   | `/api/v1/projects/{projectId}/search`           | `200` | `q`、`limit?`                 | `SearchResult[]`       |
+| `GET`   | `/api/v1/projects/{projectId}/files`            | `200` | UUID path                     | `ProjectFiles`         |
+| `GET`   | `/api/v1/projects/{projectId}/files/{filePath}` | `200` | UUID path、relative file path | `ProjectFileContent`   |
+| `GET`   | `/api/v1/sessions`                              | `200` | `projectId?`                  | `Session[]`            |
+| `POST`  | `/api/v1/sessions`                              | `201` | `SessionCreate`               | `Session`              |
+| `GET`   | `/api/v1/sessions/{sessionId}`                  | `200` | UUID path                     | `Session`              |
+| `GET`   | `/api/v1/sessions/{sessionId}/messages`         | `200` | 无                            | `Message[]`            |
+| `POST`  | `/api/v1/sessions/{sessionId}/messages`         | `201` | `MessageCreate`               | `Message`              |
+| `GET`   | `/api/v1/tasks`                                 | `200` | `projectId?`、`sessionId?`    | `Task[]`               |
+| `POST`  | `/api/v1/tasks`                                 | `201` | `TaskCreate`                  | `Task`                 |
+| `GET`   | `/api/v1/tasks/{taskId}`                        | `200` | UUID path                     | `Task`                 |
+| `GET`   | `/api/v1/tasks/{taskId}/changes`                | `200` | 无                            | `FileChange[]`         |
+| `PATCH` | `/api/v1/tasks/{taskId}/changes/{changeId}`     | `200` | `ChangeDecisionUpdate`        | `FileChange`           |
+| `GET`   | `/api/v1/tasks/{taskId}/verifications`          | `200` | 无                            | `VerificationResult[]` |
+| `GET`   | `/api/v1/tasks/{taskId}/report`                 | `200` | 无                            | `TaskReport`           |
+| `POST`  | `/api/v1/tasks/{taskId}/run`                    | `202` | 无                            | `Task`                 |
+| `POST`  | `/api/v1/tasks/{taskId}/pause`                  | `200` | 无                            | `Task`                 |
+| `POST`  | `/api/v1/tasks/{taskId}/resume`                 | `202` | 无                            | `Task`                 |
+| `POST`  | `/api/v1/tasks/{taskId}/cancel`                 | `200` | 无                            | `Task`                 |
+| `POST`  | `/api/v1/tasks/{taskId}/apply`                  | `200` | 无                            | `Task`                 |
+| `POST`  | `/api/v1/tasks/{taskId}/rollback`               | `200` | 无                            | `Task`                 |
+| `GET`   | `/api/v1/tasks/{taskId}/events`                 | `200` | `after?` 或 `Last-Event-ID`   | SSE                    |
 
 可能的错误状态码由 OpenAPI 固定：
 
@@ -159,6 +161,15 @@ GET /api/v1/projects/{projectId}/search?q=login&limit=12
 ```
 
 `q` 长度为 `1..500`，`limit` 为 `1..100`，默认 `50`。
+
+项目文件浏览：
+
+```http
+GET /api/v1/projects/{projectId}/files
+GET /api/v1/projects/{projectId}/files/{filePath}
+```
+
+第一个接口返回导入时记录的相对文件路径；第二个接口只读取项目目录内的 UTF-8 文本文件，拒绝路径穿越、符号链接、二进制文件和超过读取限制的文件。
 
 ```ts
 interface SearchResult {

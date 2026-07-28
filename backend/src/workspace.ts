@@ -13,6 +13,8 @@ const ignoredSourceEntries = new Set([
   '.git',
   '.data',
   '.next',
+  '.pytest_cache',
+  '.pytest_run',
   '.pytest_run_all',
   '.venv',
   '__pycache__',
@@ -26,6 +28,26 @@ const ignoredSourceEntries = new Set([
 
 // Generated local databases are not source files and can be large or locked while the app runs.
 const ignoredSourceFileExtensions = new Set(['.db', '.sqlite', '.sqlite3']);
+
+function isSensitiveSourceEntry(name: string): boolean {
+  return (
+    name === '.env' || name.startsWith('.env.') || name.endsWith('.pem') || name.endsWith('.key')
+  );
+}
+
+function isExcludedSourceEntry(name: string): boolean {
+  return (
+    ignoredSourceEntries.has(name) || name.startsWith('.pytest_') || isSensitiveSourceEntry(name)
+  );
+}
+
+function isExcludedSourcePath(filePath: string): boolean {
+  const parts = normalizedRelative(filePath).split('/').filter(Boolean);
+  return (
+    parts.some((part) => isExcludedSourceEntry(part)) ||
+    ignoredSourceFileExtensions.has(path.posix.extname(filePath).toLowerCase())
+  );
+}
 
 interface ManifestEntry {
   kind: 'file' | 'directory';
@@ -70,6 +92,10 @@ export interface WorkspaceTextFile {
   content: string;
   bytesRead: number;
   truncated: boolean;
+}
+
+export interface ImportedProjectFileList {
+  files: string[];
 }
 
 export interface WorkspaceDiffFile {
@@ -211,6 +237,143 @@ export class WorkspaceManager {
     assertIdentifier(snapshotId, 'snapshotId');
     const snapshotsPath = path.join(this.taskPath(taskId), 'snapshots');
     await this.removeValidated(path.join(snapshotsPath, snapshotId), snapshotsPath);
+  }
+
+  async listImportedFiles(projectId: string): Promise<ImportedProjectFileList> {
+    assertIdentifier(projectId, 'projectId');
+    const projectPath = this.projectPath(projectId);
+    const manifestPath = path.join(projectPath, 'source-metadata', 'manifest.json');
+    const rawManifest = await fs
+      .readFile(manifestPath, 'utf8')
+      .catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') {
+          throw new AppError(
+            'NOT_FOUND',
+            'Imported project metadata does not exist',
+            { projectId },
+            404
+          );
+        }
+        throw error;
+      });
+    let manifest: unknown;
+    try {
+      manifest = JSON.parse(rawManifest);
+    } catch {
+      throw new AppError('WORKSPACE_ERROR', 'Imported project manifest is invalid', { projectId });
+    }
+    if (!Array.isArray(manifest)) {
+      throw new AppError('WORKSPACE_ERROR', 'Imported project manifest is invalid', { projectId });
+    }
+    const files = manifest
+      .filter(
+        (entry): entry is ManifestEntry =>
+          typeof entry === 'object' &&
+          entry !== null &&
+          (entry as { kind?: unknown }).kind === 'file' &&
+          typeof (entry as { path?: unknown }).path === 'string'
+      )
+      .map((entry) => entry.path)
+      .filter((entry) => entry.length > 0 && !entry.includes('..') && !isExcludedSourcePath(entry))
+      .sort((left, right) => left.localeCompare(right));
+    return { files };
+  }
+
+  async readImportedSourceFile(
+    sourcePath: string,
+    requestedPath: string
+  ): Promise<WorkspaceTextFile> {
+    if (
+      !requestedPath ||
+      requestedPath.includes('\0') ||
+      path.isAbsolute(requestedPath) ||
+      path.win32.isAbsolute(requestedPath)
+    ) {
+      throw new AppError(
+        'FORBIDDEN',
+        'Only relative paths inside the imported project are allowed',
+        {
+          requestedPath
+        },
+        403
+      );
+    }
+    const source = await this.requireSourceDirectory(sourcePath);
+    if (isExcludedSourcePath(requestedPath)) {
+      throw new AppError(
+        'FORBIDDEN',
+        'Excluded source files cannot be displayed',
+        { requestedPath },
+        403
+      );
+    }
+    const candidate = path.resolve(source, requestedPath);
+    if (!isWithin(source, candidate)) {
+      throw new AppError(
+        'FORBIDDEN',
+        'Path is outside the imported project',
+        { requestedPath },
+        403
+      );
+    }
+    const relative = path.relative(source, candidate);
+    let cursor = source;
+    for (const part of relative.split(path.sep).filter(Boolean)) {
+      cursor = path.join(cursor, part);
+      const stat = await fs.lstat(cursor).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return undefined;
+        throw error;
+      });
+      if (!stat) {
+        throw new AppError('NOT_FOUND', 'Source file does not exist', { requestedPath }, 404);
+      }
+      if (stat.isSymbolicLink()) {
+        throw new AppError(
+          'FORBIDDEN',
+          'Symbolic links are not allowed in imported project paths',
+          {
+            requestedPath
+          },
+          403
+        );
+      }
+    }
+    const stat = await fs.stat(candidate);
+    if (!stat.isFile()) {
+      throw new AppError('WORKSPACE_ERROR', 'Requested source path is not a file', {
+        requestedPath
+      });
+    }
+    if (stat.size > config.maxReadFileBytes) {
+      throw new AppError('WORKSPACE_ERROR', 'Source file exceeds the read size limit', {
+        category: 'FILE_TOO_LARGE',
+        requestedPath,
+        size: stat.size,
+        maxReadFileBytes: config.maxReadFileBytes
+      });
+    }
+    const content = await fs.readFile(candidate);
+    if (isBinary(content)) {
+      throw new AppError('WORKSPACE_ERROR', 'Binary files cannot be displayed as text', {
+        category: 'BINARY_FILE',
+        requestedPath
+      });
+    }
+    let text: string;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(content);
+    } catch {
+      throw new AppError('WORKSPACE_ERROR', 'Source file is not valid UTF-8 text', {
+        category: 'BINARY_FILE',
+        requestedPath
+      });
+    }
+    return {
+      path: normalizedRelative(requestedPath),
+      content: text,
+      bytesRead: content.length,
+      truncated: false
+    };
   }
 
   async resolve(
@@ -602,7 +765,7 @@ export class WorkspaceManager {
       const entries = await fs.readdir(directory, { withFileTypes: true });
       entries.sort((left, right) => left.name.localeCompare(right.name));
       for (const entry of entries) {
-        if (ignoredSourceEntries.has(entry.name)) continue;
+        if (isExcludedSourceEntry(entry.name)) continue;
         const sourceEntry = path.join(directory, entry.name);
         const relativePath = path.join(relativeDirectory, entry.name);
         const stat = await fs.lstat(sourceEntry);

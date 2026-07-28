@@ -5,8 +5,10 @@ import type {
   BackendProject,
   BackendSession,
   BackendTask,
+  CodeFile,
   DiffHunk,
   FileChange,
+  FileNode,
   Message,
   Project,
   SearchResult,
@@ -66,6 +68,60 @@ function mapBackendProject(project: BackendProject, sourcePath?: string): Projec
     indexedFiles: 0,
     lastOpened: '刚刚'
   };
+}
+
+function languageForPath(filePath: string): string {
+  const extension = filePath.split('.').pop()?.toLowerCase();
+  const languages: Record<string, string> = {
+    ts: 'typescript',
+    tsx: 'typescript',
+    js: 'javascript',
+    jsx: 'javascript',
+    json: 'json',
+    md: 'markdown',
+    css: 'css',
+    html: 'html',
+    py: 'python',
+    java: 'java',
+    go: 'go',
+    rs: 'rust',
+    yml: 'yaml',
+    yaml: 'yaml'
+  };
+  return languages[extension || ''] || 'text';
+}
+
+function fileTreeFromPaths(filePaths: string[]): FileNode[] {
+  const roots: FileNode[] = [];
+  for (const filePath of filePaths) {
+    let children = roots;
+    let currentPath = '';
+    const parts = filePath.split('/').filter(Boolean);
+    for (const [index, name] of parts.entries()) {
+      currentPath = currentPath ? `${currentPath}/${name}` : name;
+      const isFile = index === parts.length - 1;
+      let node = children.find((candidate) => candidate.name === name);
+      if (!node) {
+        node = {
+          id: currentPath,
+          name,
+          path: currentPath,
+          type: isFile ? 'file' : 'folder',
+          ...(isFile ? { language: languageForPath(currentPath) } : { children: [] })
+        };
+        children.push(node);
+        children.sort((left, right) =>
+          left.type !== right.type
+            ? left.type === 'folder'
+              ? -1
+              : 1
+            : left.name.localeCompare(right.name)
+        );
+      }
+      if (!isFile) children = node.children!;
+    }
+  }
+  return roots;
 }
 
 function mapBackendMessage(message: BackendMessage): Message {
@@ -225,6 +281,10 @@ export function createWorkspaceApi(apiBaseUrl = configuredApiBaseUrl) {
         };
       }
 
+      const projectFiles = await request<{ files: string[] }>(
+        `/api/v1/projects/${encodeURIComponent(activeProject.id)}/files`
+      );
+
       const backendSessions = await request<BackendSession[]>(
         `/api/v1/sessions?projectId=${encodeURIComponent(activeProject.id)}`
       );
@@ -262,7 +322,11 @@ export function createWorkspaceApi(apiBaseUrl = configuredApiBaseUrl) {
 
       return {
         ...emptySnapshot,
-        projects,
+        projects: projects.map((project) =>
+          project.id === activeProject.id
+            ? { ...project, indexedFiles: projectFiles.files.length }
+            : project
+        ),
         activeProjectId: activeProject.id,
         sessions: backendSessions.map((session) => {
           const latestTask = tasksBySession.get(session.id);
@@ -281,7 +345,7 @@ export function createWorkspaceApi(apiBaseUrl = configuredApiBaseUrl) {
         messages: activeSession
           ? { [activeSession.id]: backendMessages.map(mapBackendMessage) }
           : {},
-        fileTree: [],
+        fileTree: fileTreeFromPaths(projectFiles.files),
         files: {},
         activeFilePath: '',
         openFilePaths: [],
@@ -312,6 +376,18 @@ export function createWorkspaceApi(apiBaseUrl = configuredApiBaseUrl) {
         body: JSON.stringify({ name: projectNameFromPath(path), sourcePath: path })
       });
       return mapBackendProject(project, path);
+    },
+
+    async getProjectFile(projectId: string, filePath: string): Promise<CodeFile> {
+      if (useMock) {
+        const file = initialSnapshot.files[filePath];
+        if (!file) throw new Error('File not found');
+        return structuredClone(file);
+      }
+      const file = await request<{ path: string; content: string }>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/files/${encodeURIComponent(filePath)}`
+      );
+      return { path: file.path, content: file.content, language: languageForPath(file.path) };
     },
 
     async createSession(projectId: string, title = '新任务'): Promise<BackendSession> {

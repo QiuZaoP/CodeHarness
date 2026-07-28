@@ -33,7 +33,7 @@ type WorkspaceContextValue = {
   selectSession: (sessionId: string) => Promise<void>;
   createSession: () => void;
   sendMessage: (content: string) => Promise<void>;
-  openFile: (path: string, line?: number) => void;
+  openFile: (path: string, line?: number) => Promise<void>;
   closeFile: (path: string) => void;
   setActivePanel: (panel: 'code' | 'changes') => void;
   setSearchOpen: (open: boolean) => void;
@@ -169,6 +169,16 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
 
         const nextStatus = statusFromEvent(event);
         if (nextStatus) {
+          const terminalMessage =
+            event.type === 'task.completed'
+              ? 'Task completed. Review the generated changes before applying them.'
+              : event.type === 'task.failed'
+                ? `Task failed: ${String(event.payload.message || 'Unknown error')}`
+                : event.type === 'task.cancelled'
+                  ? 'Task was cancelled. No further tools will run.'
+                  : event.type === 'task.paused'
+                    ? 'Task is paused. You can resume it when ready.'
+                    : undefined;
           return {
             ...current,
             task: { ...current.task, status: nextStatus },
@@ -179,7 +189,22 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
                     status: sessionStatusForTask(nextStatus)
                   }
                 : session
-            )
+            ),
+            messages:
+              terminalMessage && current.activeSessionId
+                ? {
+                    ...current.messages,
+                    [current.activeSessionId]: [
+                      ...(current.messages[current.activeSessionId] || []),
+                      {
+                        id: `event-${event.id}`,
+                        role: 'assistant',
+                        content: terminalMessage,
+                        createdAt: currentTime()
+                      }
+                    ]
+                  }
+                : current.messages
           };
         }
 
@@ -248,18 +273,12 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
 
   const importProject = useCallback(async (path: string) => {
     const project = await workspaceApi.importProject(path);
-    setSnapshot((current) =>
-      current
-        ? {
-            ...current,
-            projects: [project, ...current.projects],
-            activeProjectId: project.id,
-            activeSessionId: '',
-            sessions: [],
-            messages: {}
-          }
-        : current
-    );
+    setLoading(true);
+    try {
+      setSnapshot(await workspaceApi.getSnapshot(project.id));
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   const selectProject = useCallback(async (projectId: string) => {
@@ -401,30 +420,42 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
           : current
       );
       if (result.task) {
-        void workspaceApi.runTask(result.task.id).catch((caught: unknown) => {
+        await workspaceApi.runTask(result.task.id).catch((caught: unknown) => {
           setError(caught instanceof Error ? caught.message : '任务启动失败');
+          throw caught;
         });
       }
     },
     [snapshot?.activeProjectId, snapshot?.activeSessionId]
   );
 
-  const openFile = useCallback((path: string, line?: number) => {
-    setSnapshot((current) =>
-      current
-        ? {
-            ...current,
-            activeFilePath: path,
-            openFilePaths: current.openFilePaths.includes(path)
-              ? current.openFilePaths
-              : [...current.openFilePaths, path]
-          }
-        : current
-    );
-    setActiveFileLine(line ?? null);
-    setActivePanel('code');
-    setSearchOpen(false);
-  }, []);
+  const openFile = useCallback(
+    async (path: string, line?: number) => {
+      const projectId = snapshot?.activeProjectId;
+      if (!projectId) return;
+      try {
+        const file = await workspaceApi.getProjectFile(projectId, path);
+        setSnapshot((current) =>
+          current
+            ? {
+                ...current,
+                activeFilePath: path,
+                files: { ...current.files, [path]: file },
+                openFilePaths: current.openFilePaths.includes(path)
+                  ? current.openFilePaths
+                  : [...current.openFilePaths, path]
+              }
+            : current
+        );
+        setActiveFileLine(line ?? null);
+        setActivePanel('code');
+        setSearchOpen(false);
+      } catch (caught: unknown) {
+        setError(caught instanceof Error ? caught.message : 'Unable to open file');
+      }
+    },
+    [snapshot?.activeProjectId]
+  );
 
   const closeFile = useCallback((path: string) => {
     setSnapshot((current) => {
@@ -463,7 +494,28 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
       if (!snapshot.task.id) {
         return;
       }
-      const result = await workspaceApi.controlTask(snapshot.task.id, action);
+      if (action === 'cancel') {
+        setSnapshot((current) =>
+          current
+            ? {
+                ...current,
+                task: { ...current.task, status: 'CANCELLED' },
+                sessions: current.sessions.map((session) =>
+                  session.id === current.activeSessionId
+                    ? { ...session, status: 'cancelled' }
+                    : session
+                )
+              }
+            : current
+        );
+      }
+      let result: { status: WorkspaceSnapshot['task']['status'] };
+      try {
+        result = await workspaceApi.controlTask(snapshot.task.id, action);
+      } catch (caught: unknown) {
+        setError(caught instanceof Error ? caught.message : 'Task control request failed');
+        throw caught;
+      }
       setSnapshot((current) =>
         current
           ? {

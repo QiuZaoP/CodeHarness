@@ -33,7 +33,7 @@ export function SearchPalette() {
   const openActiveResult = () => {
     const result = searchResults[activeIndex];
     if (result) {
-      openFile(result.path, result.line);
+      void openFile(result.path, result.line);
     }
   };
 
@@ -90,7 +90,7 @@ export function SearchPalette() {
                 className={`search-result ${activeIndex === index ? 'search-result--active' : ''}`}
                 key={`${result.path}-${result.line}-${result.preview}`}
                 onMouseEnter={() => setActiveIndex(index)}
-                onClick={() => openFile(result.path, result.line)}
+                onClick={() => void openFile(result.path, result.line)}
                 aria-selected={activeIndex === index}
               >
                 <FileCode2 size={15} />

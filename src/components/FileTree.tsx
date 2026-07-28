@@ -45,7 +45,7 @@ function TreeNode({
   expanded: Set<string>;
   toggleExpanded: (path: string) => void;
   activePath: string;
-  onOpen: (path: string) => void;
+  onOpen: (path: string) => Promise<void>;
 }) {
   const isExpanded = expanded.has(node.path);
   const isFolder = node.type === 'folder';
@@ -55,7 +55,7 @@ function TreeNode({
       <button
         className={`tree-row ${node.path === activePath ? 'tree-row--active' : ''}`}
         style={{ paddingLeft: `${10 + depth * 14}px` }}
-        onClick={() => (isFolder ? toggleExpanded(node.path) : onOpen(node.path))}
+        onClick={() => (isFolder ? toggleExpanded(node.path) : void onOpen(node.path))}
       >
         <span className="tree-row__chevron">
           {isFolder ? isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} /> : null}

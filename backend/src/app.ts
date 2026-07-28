@@ -265,6 +265,36 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
     }
   );
 
+  app.get<{ Params: { projectId: string } }>(
+    '/api/v1/projects/:projectId/files',
+    {
+      schema: {
+        params: domainRef('projectParams'),
+        response: { 200: domainRef('projectFiles'), ...errorResponses }
+      }
+    },
+    async (request) => {
+      if (!database.getProject(request.params.projectId)) {
+        throw new AppError('NOT_FOUND', 'Project not found', request.params, 404);
+      }
+      return workspaceManager.listImportedFiles(request.params.projectId);
+    }
+  );
+
+  app.get<{ Params: { projectId: string; filePath: string } }>(
+    '/api/v1/projects/:projectId/files/:filePath',
+    {
+      schema: {
+        response: { 200: domainRef('projectFileContent'), ...errorResponses }
+      }
+    },
+    async (request) => {
+      const project = database.getProject(request.params.projectId);
+      if (!project) throw new AppError('NOT_FOUND', 'Project not found', request.params, 404);
+      return workspaceManager.readImportedSourceFile(project.sourcePath, request.params.filePath);
+    }
+  );
+
   app.get<{
     Params: { projectId: string };
     Querystring: { q: string; limit?: number };
