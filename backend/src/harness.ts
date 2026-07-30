@@ -1,14 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import type { EventBroker } from './broker.js';
 import type { BudgetManager } from './budget-manager.js';
-import type { CommandOutput } from './command-runner.js';
+import { parseAllowedCommand, type CommandOutput } from './command-runner.js';
 import { config } from './config.js';
 import type { ContextCandidate, ContextManager, SelectedContext } from './context-manager.js';
 import type { AppDatabase, TaskEventDraft, TaskRunCheckpoint } from './db.js';
 import { AppError } from './errors.js';
 import { assertDomainContract } from './event-contract.js';
+import { logger } from './logger.js';
 import type { ToolRegistrationPort } from './ports/tool-registry.js';
-import type { ModelGateway } from './ports/model-gateway.js';
+import type { DecisionRequest, DecisionResponse, ModelGateway } from './ports/model-gateway.js';
 import type { CodeIndex, ProjectOverview } from './ports/code-index.js';
 import { taskStateMachine } from './state-machine.js';
 import { contractSchemaVersion } from './types.js';
@@ -141,6 +142,30 @@ export class HarnessRunner {
       return task;
     } catch (error) {
       const current = this.requireTask(taskId);
+      if (error instanceof AppError && error.code === 'MODEL_ERROR') {
+        const details =
+          typeof error.details === 'object' && error.details !== null
+            ? (error.details as Record<string, unknown>)
+            : {};
+        logger.error(
+          {
+            taskId,
+            phase: current.status,
+            category: typeof details.category === 'string' ? details.category : 'UNKNOWN',
+            status: typeof details.status === 'number' ? details.status : undefined,
+            providerCode:
+              typeof details.providerCode === 'string' ? details.providerCode : undefined,
+            field: typeof details.field === 'string' ? details.field : undefined,
+            verificationCommand:
+              typeof details.verificationCommand === 'string'
+                ? details.verificationCommand
+                : undefined,
+            cause: typeof details.cause === 'string' ? details.cause : undefined,
+            message: error.message
+          },
+          'Model operation failed'
+        );
+      }
       const control = this.abortedControl(signal) ?? current.controlRequest;
       if (control === 'PAUSE' && !taskStateMachine.isTerminal(current.status)) {
         return this.pauseInterrupted(taskId, 'Paused by user');
@@ -295,12 +320,50 @@ export class HarnessRunner {
       );
     }
     const status = task.resumeStatus;
-    return this.transition(
+    const checkpoint = this.dependencies.database.getTaskRun(taskId);
+    const runningToolCallIds = new Set(
+      this.dependencies.database
+        .getToolCalls(taskId)
+        .filter(({ status: toolStatus }) => toolStatus === 'RUNNING')
+        .map(({ id }) => id)
+    );
+    const activeTurn = checkpoint?.state.activeTurn;
+    const preserveInterruptedTurn = activeTurn?.toolCallIds?.some((id) =>
+      runningToolCallIds.has(id)
+    );
+    const resumed = this.transition(
       task,
       status,
       { stopReason: null, resumeStatus: null, controlRequest: null },
       [{ type: 'task.resumed', payload: { status } }]
     );
+    const latestCheckpoint = this.dependencies.database.getTaskRun(taskId);
+    if (latestCheckpoint) {
+      const startedAt = new Date().toISOString();
+      this.dependencies.database.updateTaskRun(
+        {
+          ...latestCheckpoint,
+          startedAt,
+          updatedAt: startedAt,
+          state: {
+            ...latestCheckpoint.state,
+            phase: status,
+            contextRefs: [],
+            turnCount: 0,
+            activeTurn: preserveInterruptedTurn ? activeTurn : undefined,
+            consecutiveFailures: 0,
+            lastVerificationPassed:
+              activeTurn?.status === 'DECIDED' && activeTurn.decision.type === 'VERIFY'
+                ? false
+                : latestCheckpoint.state.lastVerificationPassed,
+            stopReason: undefined,
+            budget: this.dependencies.budgetManager.create()
+          }
+        },
+        latestCheckpoint.version
+      );
+    }
+    return resumed;
   }
 
   cancel(taskId: string, reason = 'Cancelled by user'): StoredTask {
@@ -360,6 +423,14 @@ export class HarnessRunner {
 
   async rollback(taskId: string): Promise<StoredTask> {
     const task = this.requireTask(taskId);
+    if (taskStateMachine.isTerminal(task.status)) {
+      throw new AppError(
+        'CONFLICT',
+        `Task cannot be rolled back from ${task.status}`,
+        { taskId, status: task.status },
+        409
+      );
+    }
     const baseline = this.dependencies.database
       .getWorkspaceSnapshots(task.id)
       .find((snapshot) => snapshot.kind === 'BASELINE');
@@ -467,6 +538,26 @@ export class HarnessRunner {
     let checkpoint = this.ensureRunCheckpoint(task);
     this.dependencies.budgetManager.assertDuration(checkpoint.startedAt, checkpoint.state.budget);
     if (definition?.permission === 'READ') {
+      const calls = this.dependencies.database
+        .getToolCalls(task.id)
+        .filter((candidate) => candidate.startedAt >= checkpoint.startedAt);
+      const reusable = [...calls]
+        .reverse()
+        .find(
+          (candidate) =>
+            candidate.status === 'SUCCEEDED' &&
+            candidate.tool.name === tool.name &&
+            JSON.stringify(candidate.tool.arguments) === JSON.stringify(tool.arguments)
+        );
+      const reusableIndex = reusable ? calls.findIndex(({ id }) => id === reusable.id) : -1;
+      const workspaceChangedAfterRead = calls
+        .slice(reusableIndex + 1)
+        .some(
+          ({ result }) => result?.status === 'SUCCEEDED' && (result.affectedFiles?.length ?? 0) > 0
+        );
+      if (reusable && !workspaceChangedAfterRead) return reusable;
+    }
+    if (definition?.permission === 'READ') {
       this.dependencies.budgetManager.assertCanRead(checkpoint.state);
     }
     checkpoint = this.saveRunCheckpoint(
@@ -497,6 +588,7 @@ export class HarnessRunner {
       this.dependencies.tools.validate(tool, permissions);
       result = await this.dependencies.tools.execute(tool, {
         workspacePath: task.workspacePath,
+        projectSourcePath: this.dependencies.database.getProject(task.projectId)?.sourcePath,
         permissions,
         signal
       });
@@ -515,6 +607,19 @@ export class HarnessRunner {
         },
         affectedFiles: [],
         durationMs: Math.max(0, Date.now() - Date.parse(startedAt))
+      };
+    }
+    if (result.status === 'SUCCEEDED' && this.isNoOpFileWrite(result.output)) {
+      result = {
+        status: 'FAILED',
+        error: {
+          code: 'CONFLICT',
+          message: 'The file write produced no workspace change',
+          details: { category: 'NO_OP_WRITE' },
+          retryable: true
+        },
+        affectedFiles: [],
+        durationMs: result.durationMs
       };
     }
     const finishedAt = new Date().toISOString();
@@ -541,6 +646,12 @@ export class HarnessRunner {
       );
     }
     state = this.dependencies.budgetManager.recordChangedFiles(state, result.affectedFiles);
+    if (
+      result.status === 'SUCCEEDED' &&
+      (result.affectedFiles.length > 0 || tool.name === 'apply_patch' || tool.name === 'write_file')
+    ) {
+      state = { ...state, lastVerificationPassed: false };
+    }
     checkpoint = this.saveRunCheckpoint(checkpoint, state);
     this.dependencies.budgetManager.assertWithin(checkpoint.state);
     this.dependencies.budgetManager.assertDuration(checkpoint.startedAt, checkpoint.state.budget);
@@ -596,6 +707,15 @@ export class HarnessRunner {
       task = this.requireTask(task.id);
       let turn = checkpoint.state.activeTurn;
       if (!turn || turn.status === 'OBSERVED') {
+        if (
+          turn?.status === 'OBSERVED' &&
+          turn.decision.type === 'COMPLETE' &&
+          !this.requiresWorkspaceChange(task) &&
+          this.canCompleteReadOnly(task)
+        ) {
+          task = await this.completeDecision(task, turn.decision);
+          continue;
+        }
         const decision = await this.nextDecision(task, controlledSignal);
         checkpoint = this.beginTurn(task, decision);
         turn = checkpoint.state.activeTurn!;
@@ -613,22 +733,163 @@ export class HarnessRunner {
     this.throwIfStopped(task.id, signal);
     const candidates = await this.contextCandidates(task, overview, checkpoint, signal);
     const selection = this.dependencies.contextManager.select(candidates);
-    let state = {
+    const state = {
       ...this.synchronizeRunState(checkpoint.state, task),
       contextRefs: selection.entries.map(({ reference }) => reference)
     };
-    state = this.dependencies.budgetManager.recordReadBytes(state, selection.totalBytes);
     checkpoint = this.saveRunCheckpoint(checkpoint, state);
     this.dependencies.budgetManager.assertWithin(checkpoint.state);
     checkpoint = this.saveRunCheckpoint(
       checkpoint,
       this.dependencies.budgetManager.reserveStep(checkpoint.state)
     );
-    const response = await this.dependencies.modelGateway.decide(
-      this.planningRequest(checkpoint.state, selection.entries),
+    const recoveryInstruction = this.recoveryInstruction(task.id);
+    const recoveryExcludedTools: readonly ToolCall['name'][] = recoveryInstruction
+      ? [
+          ...(this.hasReadAfterInvalidPatch(task.id) ? (['read_file'] as const) : []),
+          'list_files',
+          'git_diff'
+        ]
+      : [];
+    let response = await this.requestDecision(
+      this.planningRequest(
+        checkpoint.state,
+        selection.entries,
+        recoveryInstruction,
+        recoveryExcludedTools
+      ),
       signal
     );
-    this.assertDecision(response.decision);
+    try {
+      this.assertDecision(response.decision);
+    } catch (error) {
+      if (!this.isInvalidVerificationDecision(error, response.decision)) throw error;
+      checkpoint = this.saveRunCheckpoint(
+        checkpoint,
+        this.dependencies.budgetManager.recordModelUsage(checkpoint.state, response.usage)
+      );
+      this.dependencies.budgetManager.assertWithin(checkpoint.state);
+      response = await this.requestDecision(
+        this.planningRequest(
+          checkpoint.state,
+          selection.entries,
+          'The previous VERIFY decision was rejected by the command policy. Return VERIFY only with a literal allowlisted command such as "python -m pytest tests/test_parser.py -v" or "git diff --check". Do not return file-reading commands, shell commands, checklist text, or natural-language instructions.'
+        ),
+        signal
+      );
+      try {
+        this.assertDecision(response.decision);
+      } catch (retryError) {
+        if (!this.isInvalidVerificationDecision(retryError, response.decision)) {
+          throw retryError;
+        }
+        response = {
+          ...response,
+          decision: {
+            type: 'VERIFY',
+            reason: 'Use the harness verification fallback after two invalid model commands',
+            commands: [this.verificationFallback(checkpoint.state.plan)]
+          }
+        };
+      }
+    }
+    for (
+      let correctionAttempt = 1;
+      correctionAttempt <= 2 && this.isRejectedCompletion(checkpoint.state, response.decision);
+      correctionAttempt += 1
+    ) {
+      checkpoint = this.saveRunCheckpoint(
+        checkpoint,
+        this.dependencies.budgetManager.recordModelUsage(checkpoint.state, response.usage)
+      );
+      this.dependencies.budgetManager.assertWithin(checkpoint.state);
+      response = await this.requestDecision(
+        this.planningRequest(
+          checkpoint.state,
+          selection.entries,
+          `Correction ${correctionAttempt} of 2: the previous COMPLETE decision was rejected because verification or completion conditions are not satisfied. You MUST NOT return COMPLETE. Inspect the latest failed verification result and make a real fix with read_file/apply_patch/write_file, or return VERIFY with a literal allowlisted command.`
+        ),
+        signal
+      );
+      this.assertDecision(response.decision);
+    }
+    if (this.isRejectedCompletion(checkpoint.state, response.decision)) {
+      throw new AppError(
+        'MODEL_ERROR',
+        'Model returned COMPLETE after completion was rejected',
+        { category: 'INVALID_DECISION', reason: 'completion conditions are not satisfied' },
+        502
+      );
+    }
+    if (
+      recoveryInstruction &&
+      this.isExcludedRecoveryDecision(response.decision, recoveryExcludedTools)
+    ) {
+      checkpoint = this.saveRunCheckpoint(
+        checkpoint,
+        this.dependencies.budgetManager.recordModelUsage(checkpoint.state, response.usage)
+      );
+      response = await this.requestDecision(
+        this.planningRequest(
+          checkpoint.state,
+          selection.entries,
+          `${recoveryInstruction} The previous decision selected a tool that is unavailable in this recovery state. Return apply_patch, write_file, VERIFY, or PLAN_UPDATE now.`,
+          recoveryExcludedTools
+        ),
+        signal
+      );
+      this.assertDecision(response.decision);
+      if (this.isExcludedRecoveryDecision(response.decision, recoveryExcludedTools)) {
+        throw new AppError(
+          'MODEL_ERROR',
+          'Model selected a read-only tool that is unavailable during patch recovery',
+          {
+            category: 'INVALID_DECISION',
+            toolName:
+              response.decision.type === 'TOOL_CALL' ? response.decision.tool.name : undefined
+          },
+          502
+        );
+      }
+    }
+    for (
+      let correctionAttempt = 1;
+      correctionAttempt <= 1 &&
+      this.isRepeatedReadDecision(task.id, checkpoint.state, response.decision);
+      correctionAttempt += 1
+    ) {
+      const repeatedToolName =
+        response.decision.type === 'TOOL_CALL' ? response.decision.tool.name : undefined;
+      checkpoint = this.saveRunCheckpoint(
+        checkpoint,
+        this.dependencies.budgetManager.recordModelUsage(checkpoint.state, response.usage)
+      );
+      this.dependencies.budgetManager.assertWithin(checkpoint.state);
+      response = await this.requestDecision(
+        this.planningRequest(
+          checkpoint.state,
+          selection.entries,
+          `Correction ${correctionAttempt} of 1: the requested ${repeatedToolName ?? 'read'} call exactly repeats a successful read whose latest result is already present in TOOL_RESULT context. The workspace has not changed since that read. You MUST NOT request ${repeatedToolName ?? 'that read'} again. Use the existing file content now and return a different decision. If the file is invalid, return apply_patch with a hash and edits that repair it; otherwise verify, update the plan, or complete the next step.`,
+          repeatedToolName ? [repeatedToolName] : []
+        ),
+        signal
+      );
+      this.assertDecision(response.decision);
+    }
+    if (this.isRepeatedReadDecision(task.id, checkpoint.state, response.decision)) {
+      if (response.decision.type === 'TOOL_CALL' && response.decision.tool.name === 'read_file') {
+        response = {
+          ...response,
+          decision: {
+            type: 'TOOL_CALL',
+            reason: 'Harness fallback: inspect the current workspace diff after repeated reads',
+            tool: { name: 'git_diff', arguments: {} }
+          }
+        };
+      } else {
+        this.assertDecisionProgress(task.id, checkpoint.state, response.decision);
+      }
+    }
     checkpoint = this.saveRunCheckpoint(
       checkpoint,
       this.dependencies.budgetManager.recordModelUsage(checkpoint.state, response.usage)
@@ -809,8 +1070,10 @@ export class HarnessRunner {
       .getVerificationResults(task.id)
       .filter(({ createdAt }) => createdAt >= turn.startedAt);
     for (const [index, command] of turn.decision.commands.entries()) {
-      const existingVerification = existingResults[index];
-      if (existingVerification?.command === command) {
+      const existingVerification =
+        existingResults.find(({ command: existingCommand }) => existingCommand === command) ??
+        this.reusableVerification(task.id, command);
+      if (existingVerification) {
         resultIds.push(existingVerification.id);
         failed ||= existingVerification.status !== 'PASSED';
         continue;
@@ -848,7 +1111,14 @@ export class HarnessRunner {
       });
       this.dependencies.broker.publish(event);
     }
-    const plan = failed ? task.plan : this.completedPlan(task.plan);
+    const baselineVerification =
+      this.requiresWorkspaceChange(task) &&
+      (this.dependencies.database.getTaskRun(task.id)?.state.changedFiles.length ?? 0) === 0;
+    const plan = failed
+      ? task.plan
+      : baselineVerification
+        ? this.advanceVerifiedPlan(task.plan)
+        : this.completedPlan(task.plan);
     task = this.transition(this.requireTask(task.id), 'EXECUTING', { plan }, [
       ...(plan && plan !== task.plan
         ? [{ type: 'task.plan.updated' as const, payload: { plan } }]
@@ -874,14 +1144,39 @@ export class HarnessRunner {
     return this.afterFailureLimit(task, checkpoint, observation);
   }
 
+  private reusableVerification(taskId: string, command: string): VerificationResult | undefined {
+    const candidates = this.dependencies.database
+      .getVerificationResults(taskId)
+      .filter(({ command: candidate, status }) => candidate === command && status === 'PASSED')
+      .reverse();
+    const toolCalls = this.dependencies.database.getToolCalls(taskId);
+    for (const candidate of candidates) {
+      const verificationTime = Date.parse(candidate.createdAt);
+      const workspaceChanged = toolCalls.some((call) => {
+        const callTime = Date.parse(call.finishedAt ?? call.startedAt);
+        const writesFiles = (call.result?.affectedFiles.length ?? 0) > 0;
+        const isFileWrite = call.tool.name === 'apply_patch' || call.tool.name === 'write_file';
+        return (
+          call.status === 'SUCCEEDED' && callTime > verificationTime && (writesFiles || isFileWrite)
+        );
+      });
+      if (!workspaceChanged) return candidate;
+    }
+    return undefined;
+  }
+
   private async completeDecision(
     task: StoredTask,
     decision: Extract<ModelDecision, { type: 'COMPLETE' }>
   ): Promise<StoredTask> {
     const planComplete = task.plan?.steps.every(({ status }) => status === 'DONE') ?? false;
+    const readOnlyComplete = this.canCompleteReadOnly(task);
     const verified =
       this.dependencies.database.getTaskRun(task.id)?.state.lastVerificationPassed === true;
-    if (!planComplete || !verified) {
+    const currentDiff = await this.dependencies.workspaceManager.getStructuredDiff(
+      task.workspacePath
+    );
+    if (!planComplete || (!verified && !readOnlyComplete)) {
       const observation: HarnessObservation = {
         status: 'FAILED',
         summary: 'Completion rejected because the plan or verification is incomplete',
@@ -894,8 +1189,24 @@ export class HarnessRunner {
       const checkpoint = this.observeTurn(task.id, observation);
       return this.afterFailureLimit(task, checkpoint, observation);
     }
-    await this.finalizeChanges(task);
-    this.observeTurn(task.id, { status: 'SUCCEEDED', summary: decision.summary });
+    if (this.requiresWorkspaceChange(task) && currentDiff.length === 0) {
+      const observation: HarnessObservation = {
+        status: 'FAILED',
+        summary: 'Completion rejected because no workspace changes were produced',
+        error: {
+          code: 'CONFLICT',
+          message: 'This task requests file changes, but the workspace is unchanged',
+          retryable: true
+        }
+      };
+      const checkpoint = this.observeTurn(task.id, observation);
+      return this.afterFailureLimit(task, checkpoint, observation);
+    }
+    await this.finalizeChanges(task, currentDiff);
+    const activeTurn = this.dependencies.database.getTaskRun(task.id)?.state.activeTurn;
+    if (activeTurn?.status === 'DECIDED') {
+      this.observeTurn(task.id, { status: 'SUCCEEDED', summary: decision.summary });
+    }
     const completedAt = new Date().toISOString();
     const completionMessage: Message = {
       id: randomUUID(),
@@ -916,20 +1227,24 @@ export class HarnessRunner {
           messageId: completionMessage.id,
           summary: completionMessage.content,
           verification: {
-            command: latestVerification!.command,
-            code: latestVerification!.exitCode ?? 0
+            command: latestVerification?.command ?? 'read-only task: no verification command',
+            code: latestVerification?.exitCode ?? 0
           }
         }
       }
     ]);
   }
 
-  private async finalizeChanges(task: StoredTask): Promise<void> {
+  private async finalizeChanges(
+    task: StoredTask,
+    diff?: Awaited<ReturnType<WorkspaceManager['getStructuredDiff']>>
+  ): Promise<void> {
     const snapshots = this.dependencies.database.getWorkspaceSnapshots(task.id);
     if (!snapshots.some(({ kind }) => kind === 'FINAL')) {
       await this.checkpoint(task.id, 'FINAL');
     }
-    const diff = await this.dependencies.workspaceManager.getStructuredDiff(task.workspacePath);
+    const currentDiff =
+      diff ?? (await this.dependencies.workspaceManager.getStructuredDiff(task.workspacePath));
     const toolCalls = this.dependencies.database.getToolCalls(task.id);
     const sideEffectNames = new Set(
       this.dependencies.tools
@@ -939,7 +1254,7 @@ export class HarnessRunner {
     );
     const changes = this.dependencies.database.replaceFileChanges(
       task.id,
-      diff.map((file): FileChange => {
+      currentDiff.map((file): FileChange => {
         const origin =
           [...toolCalls]
             .reverse()
@@ -975,6 +1290,42 @@ export class HarnessRunner {
         changedFiles: changes.map(({ path }) => path)
       });
     }
+  }
+
+  private canCompleteReadOnly(task: StoredTask): boolean {
+    const planComplete = task.plan?.steps.every(({ status }) => status === 'DONE') ?? false;
+    const state = this.dependencies.database.getTaskRun(task.id)?.state;
+    return (
+      planComplete &&
+      (state?.changedFiles.length ?? 0) === 0 &&
+      (state?.verificationResultIds.length ?? 0) === 0
+    );
+  }
+
+  private requiresWorkspaceChange(task: StoredTask): boolean {
+    const goal = task.goal.toLocaleLowerCase();
+    const englishChangeIntent =
+      /\b(?:fix|refactor|modify|change|update|implement|add|remove|replace|rewrite|patch|repair)\b/.test(
+        goal
+      );
+    const chineseChangeIntent = [
+      '修复',
+      '重构',
+      '修改',
+      '更新',
+      '实现',
+      '新增',
+      '删除',
+      '替换',
+      '重写',
+      '补充',
+      '改动',
+      '添加',
+      '增加',
+      '加注释',
+      '注释'
+    ].some((indicator) => goal.includes(indicator));
+    return englishChangeIntent || chineseChangeIntent;
   }
 
   private async assertStoredDiffCurrent(
@@ -1054,6 +1405,25 @@ export class HarnessRunner {
     }
   }
 
+  private advanceVerifiedPlan(plan: TaskPlan | undefined): TaskPlan | undefined {
+    if (!plan) return undefined;
+    const currentIndex = plan.steps.findIndex(({ status }) => status === 'RUNNING');
+    const stepIndex =
+      currentIndex >= 0 ? currentIndex : plan.steps.findIndex(({ status }) => status !== 'DONE');
+    if (stepIndex < 0) return plan;
+    const nextIndex = plan.steps.findIndex(
+      ({ status }, index) => index > stepIndex && status !== 'DONE'
+    );
+    return {
+      ...plan,
+      steps: plan.steps.map((step, index) => {
+        if (index === stepIndex) return { ...step, status: 'DONE' as const };
+        if (index === nextIndex) return { ...step, status: 'RUNNING' as const };
+        return step;
+      })
+    };
+  }
+
   private completedPlan(plan: TaskPlan | undefined): TaskPlan | undefined {
     if (!plan) return undefined;
     return {
@@ -1063,11 +1433,30 @@ export class HarnessRunner {
   }
 
   private toolObservation(record: ToolCallRecord): HarnessObservation {
-    if (record.result?.status === 'SUCCEEDED') {
+    const commandOutput =
+      record.tool.name === 'run_command'
+        ? (record.result?.output as CommandOutput | undefined)
+        : undefined;
+    const commandFailed = commandOutput !== undefined && commandOutput.code !== 0;
+    if (record.result?.status === 'SUCCEEDED' && !commandFailed) {
       return {
         status: 'SUCCEEDED',
         summary: JSON.stringify(this.summary(record.result.output)),
         toolCallId: record.id
+      };
+    }
+    if (commandFailed) {
+      return {
+        status: 'FAILED',
+        summary: `Command exited with code ${commandOutput.code}: ${
+          `${commandOutput.stdout}\n${commandOutput.stderr}`.trim() || 'no output'
+        }`,
+        toolCallId: record.id,
+        error: {
+          code: 'WORKSPACE_ERROR',
+          message: `Command exited with code ${commandOutput.code}`,
+          retryable: true
+        }
       };
     }
     return {
@@ -1107,17 +1496,10 @@ export class HarnessRunner {
   }
 
   private verificationTool(command: string): ToolCall {
-    const trimmed = command.trim();
-    if (!trimmed || /[;&|><`$"'\\\r\n]/.test(trimmed) || trimmed.split(/\s+/).length > 51) {
-      return {
-        name: 'run_command',
-        arguments: { executable: '', args: [] }
-      };
-    }
-    const [executable, ...args] = trimmed.split(/\s+/);
+    const request = parseAllowedCommand(command);
     return {
       name: 'run_command',
-      arguments: { executable, args }
+      arguments: { ...request }
     };
   }
 
@@ -1178,6 +1560,12 @@ export class HarnessRunner {
     return category === 'INTERRUPTED_TOOL' || category === 'PRECHECK_DIRTY';
   }
 
+  private isInvalidVerificationDecision(error: unknown, decision: ModelDecision): boolean {
+    if (!(error instanceof AppError) || decision.type !== 'VERIFY') return false;
+    if (typeof error.details !== 'object' || error.details === null) return false;
+    return (error.details as { category?: unknown }).category === 'INVALID_DECISION';
+  }
+
   private assertDecision(decision: ModelDecision): void {
     try {
       assertDomainContract('modelDecision', decision);
@@ -1192,6 +1580,171 @@ export class HarnessRunner {
         502
       );
     }
+    if (decision.type === 'VERIFY') {
+      for (const command of decision.commands) {
+        try {
+          parseAllowedCommand(command);
+        } catch (error) {
+          throw new AppError(
+            'MODEL_ERROR',
+            'Model returned an invalid verification command',
+            {
+              category: 'INVALID_DECISION',
+              verificationCommand: command.slice(0, 500),
+              cause: error instanceof Error ? error.message : String(error)
+            },
+            502
+          );
+        }
+      }
+    }
+  }
+
+  private assertDecisionProgress(taskId: string, state: RunState, decision: ModelDecision): void {
+    if (!this.isRepeatedReadDecision(taskId, state, decision)) return;
+    throw new AppError(
+      'MODEL_ERROR',
+      'Model repeated the same successful tool call without making progress',
+      {
+        category: 'REPEATED_DECISION',
+        toolName: decision.type === 'TOOL_CALL' ? decision.tool.name : undefined
+      },
+      502
+    );
+  }
+
+  private verificationFallback(plan?: TaskPlan): string {
+    for (const candidate of plan?.verification ?? []) {
+      try {
+        parseAllowedCommand(candidate.trim());
+        return candidate.trim();
+      } catch {
+        // Fall through to the universal diff check.
+      }
+    }
+    return 'git diff --check';
+  }
+
+  private isRejectedCompletion(state: RunState, decision: ModelDecision): boolean {
+    const observation = state.activeTurn?.observation;
+    return (
+      decision.type === 'COMPLETE' &&
+      state.activeTurn?.status === 'OBSERVED' &&
+      observation?.status === 'FAILED' &&
+      observation.error?.code === 'CONFLICT' &&
+      observation.summary.startsWith('Completion rejected') &&
+      state.verificationResultIds.length > 0
+    );
+  }
+
+  private latestInvalidPatchCall(taskId: string): ToolCallRecord | undefined {
+    const calls = this.dependencies.database.getToolCalls(taskId).filter(({ result }) => result);
+    const patchIndex = [...calls]
+      .reverse()
+      .findIndex(
+        ({ tool, result }) =>
+          tool.name === 'apply_patch' &&
+          result?.status === 'FAILED' &&
+          result.error?.code === 'VALIDATION_ERROR' &&
+          result.error.message.includes('Patch edits overlap')
+      );
+    if (patchIndex < 0) return undefined;
+    const actualIndex = calls.length - patchIndex - 1;
+    if (
+      calls
+        .slice(actualIndex + 1)
+        .some(
+          ({ result }) => result?.status === 'SUCCEEDED' && (result.affectedFiles?.length ?? 0) > 0
+        )
+    ) {
+      return undefined;
+    }
+    return calls[actualIndex];
+  }
+
+  private isInvalidPatchObservation(taskId: string): boolean {
+    return this.latestInvalidPatchCall(taskId) !== undefined;
+  }
+
+  private recoveryInstruction(taskId: string): string | undefined {
+    const invalidPatch = this.latestInvalidPatchCall(taskId);
+    if (!invalidPatch) return undefined;
+    const details = invalidPatch.result?.error?.details;
+    const lineCount =
+      typeof details === 'object' && details !== null && !Array.isArray(details)
+        ? (details as { lineCount?: unknown }).lineCount
+        : undefined;
+    const lineCountInstruction =
+      typeof lineCount === 'number' ? ` The current file has exactly ${lineCount} lines.` : '';
+    const readInstruction = this.hasReadAfterInvalidPatch(taskId)
+      ? 'A numbered file result is already available; do not call read_file again.'
+      : 'If numberedContent is not present in the latest file result, call read_file once for the same path and then use its numberedContent.';
+    return `The previous apply_patch was rejected by the tool because its edit ranges overlap or are outside the current file.${lineCountInstruction} Treat the tool result as authoritative. ${readInstruction} Return one new valid TOOL_CALL apply_patch using the existing file content: edits use original-file 1-based line numbers within that file, each startLine may appear only once, and a replacement must be one edit with deleteCount plus replacement lines. Do not repeat the rejected patch, use a line beyond the current file, split one replacement into delete and insert edits, or spend a turn rereading the unchanged file.`;
+  }
+
+  private hasReadAfterInvalidPatch(taskId: string): boolean {
+    const invalidPatch = this.latestInvalidPatchCall(taskId);
+    if (!invalidPatch) return false;
+    const calls = this.dependencies.database.getToolCalls(taskId).filter(({ result }) => result);
+    const invalidIndex = calls.findIndex(({ id }) => id === invalidPatch.id);
+    return calls
+      .slice(invalidIndex + 1)
+      .some(({ tool, result }) => tool.name === 'read_file' && result?.status === 'SUCCEEDED');
+  }
+
+  private isExcludedRecoveryDecision(
+    decision: ModelDecision,
+    excludedTools: readonly ToolCall['name'][]
+  ): boolean {
+    return decision.type === 'TOOL_CALL' && excludedTools.includes(decision.tool.name);
+  }
+
+  private isNoOpFileWrite(output: unknown): boolean {
+    if (!output || typeof output !== 'object' || Array.isArray(output)) return false;
+    const value = output as { previousHash?: unknown; hash?: unknown };
+    return (
+      typeof value.previousHash === 'string' &&
+      typeof value.hash === 'string' &&
+      value.previousHash === value.hash
+    );
+  }
+
+  private isRepeatedReadDecision(
+    taskId: string,
+    _state: RunState,
+    decision: ModelDecision
+  ): boolean {
+    if (
+      decision.type !== 'TOOL_CALL' ||
+      !['list_files', 'read_file', 'git_diff'].includes(decision.tool.name)
+    ) {
+      return false;
+    }
+
+    const runStartedAt = this.dependencies.database.getTaskRun(taskId)?.startedAt;
+    if (!runStartedAt) return false;
+
+    const successfulCalls = this.dependencies.database
+      .getToolCalls(taskId)
+      .filter(
+        (call) =>
+          call.status === 'SUCCEEDED' && Date.parse(call.startedAt) >= Date.parse(runStartedAt)
+      );
+    const reverseIndex = [...successfulCalls]
+      .reverse()
+      .findIndex(
+        (call) =>
+          call.tool.name === decision.tool.name &&
+          JSON.stringify(call.tool.arguments) === JSON.stringify(decision.tool.arguments)
+      );
+    const matchingIndex = reverseIndex < 0 ? -1 : successfulCalls.length - reverseIndex - 1;
+    if (matchingIndex < 0) return false;
+
+    // A successful workspace write invalidates earlier reads, so rereading
+    // after a change remains valid and gives the model fresh context.
+    return !successfulCalls
+      .slice(matchingIndex + 1)
+      .some(({ result }) => (result?.affectedFiles?.length ?? 0) > 0);
   }
 
   private async plan(task: StoredTask, signal?: AbortSignal): Promise<TaskPlan> {
@@ -1206,12 +1759,10 @@ export class HarnessRunner {
     this.throwIfStopped(task.id, signal);
     const candidates = await this.contextCandidates(task, overview, checkpoint, controlledSignal);
     const selection = this.dependencies.contextManager.select(candidates);
-    let state = this.synchronizeRunState(checkpoint.state, task);
-    state = {
-      ...state,
+    const state = {
+      ...this.synchronizeRunState(checkpoint.state, task),
       contextRefs: selection.entries.map(({ reference }) => reference)
     };
-    state = this.dependencies.budgetManager.recordReadBytes(state, selection.totalBytes);
     checkpoint = this.saveRunCheckpoint(checkpoint, state);
     this.dependencies.budgetManager.assertWithin(checkpoint.state);
     this.dependencies.budgetManager.assertDuration(checkpoint.startedAt, checkpoint.state.budget);
@@ -1219,7 +1770,7 @@ export class HarnessRunner {
       checkpoint,
       this.dependencies.budgetManager.reserveStep(checkpoint.state)
     );
-    const response = await this.dependencies.modelGateway.decide(
+    const response = await this.requestDecision(
       this.planningRequest(checkpoint.state, selection.entries),
       controlledSignal
     );
@@ -1243,11 +1794,48 @@ export class HarnessRunner {
     return response.decision.plan;
   }
 
-  private planningRequest(state: RunState, context: readonly SelectedContext[]) {
+  private planningRequest(
+    state: RunState,
+    context: readonly SelectedContext[],
+    harnessInstruction?: string,
+    excludedTools: readonly ToolCall['name'][] = []
+  ) {
     return {
       runState: state,
       context,
-      availableTools: this.dependencies.tools.definitions()
+      availableTools: this.dependencies.tools
+        .definitions()
+        .filter(({ name }) => name !== 'run_command' && !excludedTools.includes(name)),
+      harnessInstruction
+    };
+  }
+
+  private async requestDecision(
+    request: DecisionRequest,
+    signal: AbortSignal
+  ): Promise<DecisionResponse> {
+    const response = await this.dependencies.modelGateway.decide(request, signal);
+    return { ...response, decision: this.normalizeDecision(response.decision) };
+  }
+
+  private normalizeDecision(decision: ModelDecision): ModelDecision {
+    if (decision.type !== 'TOOL_CALL' || decision.tool.name !== 'run_command') return decision;
+    const executable = decision.tool.arguments.executable;
+    const args = decision.tool.arguments.args;
+    if (
+      typeof executable !== 'string' ||
+      !Array.isArray(args) ||
+      !args.every((arg) => typeof arg === 'string')
+    ) {
+      return decision;
+    }
+    const command = [executable, ...args].join(' ');
+    parseAllowedCommand(command);
+    return {
+      type: 'VERIFY',
+      reason: decision.reason,
+      expectedObservation: decision.expectedObservation,
+      commands: [command]
     };
   }
 
@@ -1355,27 +1943,45 @@ export class HarnessRunner {
         });
       }
       const bounded = this.dependencies.contextManager.select(candidates);
-      let state = this.dependencies.budgetManager.recordReadBytes(
-        this.synchronizeRunState(checkpoint.state, task),
-        bounded.totalBytes
-      );
+      let state = this.synchronizeRunState(checkpoint.state, task);
       checkpoint = this.saveRunCheckpoint(checkpoint, state);
       this.dependencies.budgetManager.assertWithin(checkpoint.state);
       this.dependencies.budgetManager.assertDuration(checkpoint.startedAt, checkpoint.state.budget);
       this.dependencies.budgetManager.assertCanCallModel(checkpoint.state);
-      const response = await this.dependencies.modelGateway.summarize(
-        {
-          goal: task.goal,
-          observations: bounded.entries.map(({ content }) => content),
-          changedFiles: checkpoint.state.changedFiles
-        },
-        signal
-      );
-      state = this.dependencies.budgetManager.recordModelUsage(checkpoint.state, response.usage);
-      checkpoint = this.saveRunCheckpoint(checkpoint, state, {
-        historySummary: response.summary,
-        summarizedMessageCount: batchEnd
-      });
+      try {
+        const response = await this.dependencies.modelGateway.summarize(
+          {
+            goal: task.goal,
+            observations: bounded.entries.map(({ content }) => content),
+            changedFiles: checkpoint.state.changedFiles
+          },
+          signal
+        );
+        state = this.dependencies.budgetManager.recordModelUsage(checkpoint.state, response.usage);
+        checkpoint = this.saveRunCheckpoint(checkpoint, state, {
+          historySummary: response.summary,
+          summarizedMessageCount: batchEnd
+        });
+      } catch (error) {
+        if (signal.aborted || (error instanceof AppError && error.code === 'TASK_CANCELLED')) {
+          throw error;
+        }
+        const category =
+          error instanceof AppError &&
+          typeof error.details === 'object' &&
+          error.details !== null &&
+          'category' in error.details
+            ? String((error.details as { category: unknown }).category)
+            : 'UNKNOWN';
+        logger.warn(
+          { taskId: task.id, category },
+          'History summarization skipped after model failure'
+        );
+        checkpoint = this.saveRunCheckpoint(checkpoint, state, {
+          summarizedMessageCount: olderCount
+        });
+        return checkpoint;
+      }
       this.dependencies.budgetManager.assertWithin(checkpoint.state);
       this.dependencies.budgetManager.assertDuration(checkpoint.startedAt, checkpoint.state.budget);
     }
@@ -1457,21 +2063,30 @@ export class HarnessRunner {
         priority: 60 + index
       });
     });
-    this.dependencies.database
+    const recentToolCalls = this.dependencies.database
       .getToolCalls(task.id)
       .filter(({ result }) => result !== undefined)
-      .slice(-8)
-      .forEach((call, index) => {
-        candidates.push({
-          reference: {
-            ref: `tool-call:${call.id}:result`,
-            kind: 'TOOL_RESULT',
-            source: call.tool.name
-          },
-          content: JSON.stringify(call.result),
-          priority: 40 + index
-        });
+      .slice(-4);
+    const seenToolResults = new Set<string>();
+    recentToolCalls.reverse().forEach((call, index) => {
+      const dedupeKey = `${call.tool.name}:${JSON.stringify(call.tool.arguments)}`;
+      if (seenToolResults.has(dedupeKey)) return;
+      seenToolResults.add(dedupeKey);
+      const chronologicalIndex = recentToolCalls.length - index - 1;
+      candidates.push({
+        reference: {
+          ref: `tool-call:${call.id}:result`,
+          kind: 'TOOL_RESULT',
+          source: call.tool.name
+        },
+        content: [
+          `Completed tool call: ${call.tool.name}`,
+          `Arguments: ${JSON.stringify(call.tool.arguments)}`,
+          `Observation: ${JSON.stringify(this.contextToolResult(call.result!))}`
+        ].join('\n'),
+        priority: 95 + chronologicalIndex
       });
+    });
     return candidates;
   }
 
@@ -1512,7 +2127,46 @@ export class HarnessRunner {
   private summary(value: unknown): unknown {
     if (Array.isArray(value)) return { count: value.length, items: value.slice(0, 20) };
     if (typeof value === 'string') return value.slice(0, 1000);
+    if (value && typeof value === 'object') {
+      const record = value as Record<string, unknown>;
+      if (typeof record.content === 'string' || typeof record.numberedContent === 'string') {
+        return {
+          path: record.path,
+          lineCount: record.lineCount,
+          hash: record.hash,
+          bytes: record.bytes,
+          contentOmitted: true
+        };
+      }
+      if (typeof record.stdout === 'string' || typeof record.stderr === 'string') {
+        return {
+          ...record,
+          stdout: typeof record.stdout === 'string' ? record.stdout.slice(0, 2000) : record.stdout,
+          stderr: typeof record.stderr === 'string' ? record.stderr.slice(0, 2000) : record.stderr
+        };
+      }
+    }
     return value;
+  }
+
+  private contextToolResult(result: ToolResult): ToolResult {
+    if (!result.output || typeof result.output !== 'object' || Array.isArray(result.output)) {
+      return { ...result, output: this.summary(result.output) };
+    }
+    const output = result.output as Record<string, unknown>;
+    if (typeof output.numberedContent === 'string') {
+      return {
+        ...result,
+        output: {
+          path: output.path,
+          lineCount: output.lineCount,
+          numberedContent: output.numberedContent,
+          hash: output.hash,
+          bytes: output.bytes
+        }
+      };
+    }
+    return { ...result, output: this.summary(result.output) };
   }
 
   private safeArguments(arguments_: Record<string, unknown>): Record<string, unknown> {

@@ -28,6 +28,7 @@ const ignoredSourceEntries = new Set([
 
 // Generated local databases are not source files and can be large or locked while the app runs.
 const ignoredSourceFileExtensions = new Set(['.db', '.sqlite', '.sqlite3']);
+const taskGitWhitespacePolicy = 'blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol';
 
 function isSensitiveSourceEntry(name: string): boolean {
   return (
@@ -457,6 +458,7 @@ export class WorkspaceManager {
     if (!gitDirectory?.isDirectory()) {
       throw new AppError('WORKSPACE_ERROR', 'Task workspace is not an isolated Git repository');
     }
+    await this.ensureGitWhitespacePolicy(root);
   }
 
   async readOptionalTextFile(
@@ -1073,6 +1075,7 @@ export class WorkspaceManager {
     ]);
     await this.runGit(workspace, ['config', '--local', 'core.hooksPath', hooksPath]);
     await this.runGit(workspace, ['config', '--local', 'core.autocrlf', 'false']);
+    await this.runGit(workspace, ['config', '--local', 'core.whitespace', taskGitWhitespacePolicy]);
     await this.runGit(workspace, ['config', '--local', 'core.fsmonitor', 'false']);
     await this.runGit(workspace, ['config', '--local', 'commit.gpgSign', 'false']);
     await this.runGit(workspace, ['add', '-A']);
@@ -1091,6 +1094,14 @@ export class WorkspaceManager {
     } catch {
       return undefined;
     }
+  }
+
+  private async ensureGitWhitespacePolicy(root: string): Promise<void> {
+    const configured = (
+      await this.tryGit(root, ['config', '--local', '--get', 'core.whitespace'])
+    )?.trim();
+    if (configured === taskGitWhitespacePolicy) return;
+    await this.runGit(root, ['config', '--local', 'core.whitespace', taskGitWhitespacePolicy]);
   }
 
   private runGit(cwd: string, args: string[], indexPath?: string): Promise<string> {

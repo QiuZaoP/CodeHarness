@@ -2,6 +2,7 @@ import {
   Ban,
   Check,
   Circle,
+  CircleAlert,
   CircleDashed,
   Clock3,
   Pause,
@@ -45,6 +46,7 @@ export function TaskProgress() {
   const isReviewReady = task.status === 'READY_FOR_REVIEW';
   const isWaitingUser = task.status === 'WAITING_USER';
   const isApplied = task.status === 'APPLIED';
+  const canResume = isPaused || isWaitingUser;
   const controlsDisabled = isCancelled || isFailed || isReviewReady || isApplied;
   const statusLabel =
     task.status === 'PAUSED'
@@ -70,6 +72,8 @@ export function TaskProgress() {
           <span className={`run-status run-status--${task.status.toLocaleLowerCase()}`}>
             {isPaused ? (
               <Pause size={13} />
+            ) : isWaitingUser ? (
+              <CircleAlert size={13} />
             ) : isCancelled || isFailed ? (
               <Ban size={13} />
             ) : isReviewReady || isApplied ? (
@@ -87,12 +91,12 @@ export function TaskProgress() {
         </div>
         <div className="task-progress__controls">
           <IconButton
-            label={isPaused ? '继续任务' : '暂停任务'}
+            label={canResume ? '继续任务' : '暂停任务'}
             size="small"
-            onClick={() => controlTask(isPaused ? 'resume' : 'pause')}
+            onClick={() => controlTask(canResume ? 'resume' : 'pause')}
             disabled={controlsDisabled}
           >
-            {isPaused ? <Play size={15} /> : <Pause size={15} />}
+            {canResume ? <Play size={15} /> : <Pause size={15} />}
           </IconButton>
           <IconButton
             label="取消任务"
@@ -152,6 +156,12 @@ export function TaskProgress() {
             <div className="task-callout">
               <RotateCcw size={14} />
               任务状态已保留，继续后将从当前步骤恢复。
+            </div>
+          ) : null}
+          {isWaitingUser ? (
+            <div className="task-callout">
+              <CircleAlert size={14} />
+              {task.stopReason || '任务需要确认后才能继续。'}
             </div>
           ) : null}
           {isFailed ? (

@@ -1,7 +1,9 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import { AppError } from './errors.js';
 
-export type AllowedExecutable = 'node' | 'npm' | 'git';
+export type AllowedExecutable = 'node' | 'npm' | 'python' | 'pytest' | 'git';
 
 export interface CommandRequest {
   executable: AllowedExecutable;
@@ -22,6 +24,39 @@ export interface CommandOutput {
 const forbiddenArgumentCharacters = /[;&|><`\r\n\0]/;
 const npmScriptName = /^[a-zA-Z0-9:_-]+$/;
 const relativeJavaScriptPath = /^(?![\\/])(?![a-zA-Z]:)[a-zA-Z0-9_./\\-]+\.[cm]?js$/;
+const relativeTestPath =
+  /^(?![\\/])(?![a-zA-Z]:)(?!.*(?:^|[\\/])\.\.(?:[\\/]|$))[a-zA-Z0-9_./\\-]+$/;
+const pytestOption =
+  /^(?:-x|-q|-v|--quiet|--verbose|--disable-warnings|--maxfail=[1-9][0-9]{0,3}|--timeout=[1-9][0-9]{0,5}|--tb=(?:auto|long|short|line|native|no))$/;
+const pytestTimeout = /^--timeout=([1-9][0-9]{0,5})$/;
+
+function allowedPytestArguments(args: readonly string[]): boolean {
+  return args.every((argument) => relativeTestPath.test(argument) || pytestOption.test(argument));
+}
+
+export function parseAllowedCommand(command: string): CommandRequest {
+  const trimmed = command.trim();
+  if (!trimmed || /[;&|><`$"'\\\r\n]/.test(trimmed) || trimmed.split(/\s+/).length > 51) {
+    throw new AppError(
+      'COMMAND_NOT_ALLOWED',
+      'Verification command is not allowed by policy',
+      { command },
+      403
+    );
+  }
+  const [executable, ...args] = trimmed.split(/\s+/);
+  if (!['node', 'npm', 'python', 'pytest', 'git'].includes(executable)) {
+    throw new AppError(
+      'COMMAND_NOT_ALLOWED',
+      'Verification command is not allowed by policy',
+      { command },
+      403
+    );
+  }
+  const request = { executable: executable as AllowedExecutable, args };
+  assertCommandAllowed(request);
+  return request;
+}
 
 export function assertCommandAllowed(request: CommandRequest): void {
   if (
@@ -64,11 +99,21 @@ export function assertCommandAllowed(request: CommandRequest): void {
     if (allowed) return;
   }
 
+  if (request.executable === 'python') {
+    const [command, target, ...rest] = request.args;
+    const allowed =
+      ((command === '--version' || command === '-V') && target === undefined) ||
+      (command === '-m' && target === 'pytest' && allowedPytestArguments(rest));
+    if (allowed) return;
+  }
+
+  if (request.executable === 'pytest' && allowedPytestArguments(request.args)) return;
+
   if (request.executable === 'git') {
     const [command, ...args] = request.args;
     const allowedByCommand: Record<string, readonly string[]> = {
       status: ['--short', '--porcelain', '--porcelain=v1', '--branch', '--untracked-files=all'],
-      diff: ['--stat', '--name-only', '--name-status', '--cached'],
+      diff: ['--stat', '--name-only', '--name-status', '--cached', '--check'],
       log: ['--oneline', '--decorate', '--all', 'HEAD'],
       show: ['--stat', '--oneline', 'HEAD'],
       'rev-parse': ['HEAD', '--show-toplevel', '--abbrev-ref']
@@ -103,11 +148,12 @@ export class ControlledCommandRunner {
   async run(
     workspace: string,
     request: CommandRequest,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    projectSourcePath?: string
   ): Promise<CommandOutput> {
     assertCommandAllowed(request);
     if (signal?.aborted) throw this.abortReason(signal);
-    const timeoutMs = request.timeoutMs ?? this.maxTimeoutMs;
+    const timeoutMs = request.timeoutMs ?? this.pytestTimeoutMs(request) ?? this.maxTimeoutMs;
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > this.maxTimeoutMs) {
       throw new AppError('VALIDATION_ERROR', 'Command timeout is outside the allowed range', {
         timeoutMs,
@@ -118,6 +164,19 @@ export class ControlledCommandRunner {
     return new Promise((resolve, reject) => {
       let executable: string = request.executable;
       let spawnArgs = request.args;
+      if (request.executable === 'python' || request.executable === 'pytest') {
+        const pythonExecutable = this.findPythonExecutable(workspace, projectSourcePath);
+        const pytestArgs = request.args.filter((argument) => !pytestTimeout.test(argument));
+        if (pythonExecutable) {
+          executable = pythonExecutable;
+          spawnArgs =
+            request.executable === 'pytest'
+              ? ['-m', 'pytest', ...pytestArgs]
+              : request.args[0] === '-m' && request.args[1] === 'pytest'
+                ? ['-m', 'pytest', ...pytestArgs.slice(2)]
+                : request.args;
+        }
+      }
       if (process.platform === 'win32' && request.executable === 'npm') {
         const npmCli = process.env.npm_execpath;
         if (!npmCli || !/npm-cli\.js$/i.test(npmCli)) {
@@ -134,11 +193,13 @@ export class ControlledCommandRunner {
         executable = process.execPath;
         spawnArgs = [npmCli, ...request.args];
       }
+      const temporaryDirectory = path.join(path.dirname(workspace), 'artifacts');
+      fs.mkdirSync(temporaryDirectory, { recursive: true });
       let child: ChildProcessWithoutNullStreams;
       try {
         child = spawn(executable, spawnArgs, {
           cwd: workspace,
-          env: this.commandEnvironment(),
+          env: this.commandEnvironment(temporaryDirectory),
           shell: false,
           windowsHide: true,
           detached: process.platform !== 'win32'
@@ -221,7 +282,28 @@ export class ControlledCommandRunner {
     });
   }
 
-  private commandEnvironment(): NodeJS.ProcessEnv {
+  private findPythonExecutable(workspace: string, projectSourcePath?: string): string | undefined {
+    if (process.platform !== 'win32') return undefined;
+    const roots = [projectSourcePath, workspace].filter((root): root is string => Boolean(root));
+    for (const root of roots) {
+      for (const environmentName of ['.venv', 'venv']) {
+        const candidate = path.join(root, environmentName, 'Scripts', 'python.exe');
+        if (fs.existsSync(candidate)) return candidate;
+      }
+    }
+    return undefined;
+  }
+
+  private pytestTimeoutMs(request: CommandRequest): number | undefined {
+    if (request.executable !== 'python' && request.executable !== 'pytest') return undefined;
+    const seconds = request.args
+      .find((argument) => pytestTimeout.test(argument))
+      ?.match(pytestTimeout)?.[1];
+    if (!seconds) return undefined;
+    return Math.min(Number(seconds) * 1_000, this.maxTimeoutMs);
+  }
+
+  private commandEnvironment(temporaryDirectory?: string): NodeJS.ProcessEnv {
     const environment: NodeJS.ProcessEnv = {
       CI: 'true',
       GIT_TERMINAL_PROMPT: '0',
@@ -245,6 +327,10 @@ export class ControlledCommandRunner {
     ];
     for (const name of allowed) {
       if (process.env[name] !== undefined) environment[name] = process.env[name];
+    }
+    if (temporaryDirectory) {
+      environment.TEMP = temporaryDirectory;
+      environment.TMP = temporaryDirectory;
     }
     return environment;
   }

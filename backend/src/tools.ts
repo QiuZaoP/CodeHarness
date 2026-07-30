@@ -23,6 +23,8 @@ import type { CodeIndexService } from './code-index.js';
 interface ReadFileOutput {
   path: string;
   content: string;
+  lineCount: number;
+  numberedContent: string;
   hash: string;
   bytes: number;
 }
@@ -113,6 +115,8 @@ const definitions: ToolDefinition[] = [
       properties: {
         path: { type: 'string' },
         content: { type: 'string' },
+        lineCount: { type: 'integer', minimum: 0 },
+        numberedContent: { type: 'string' },
         hash: { type: 'string', pattern: sha256Pattern },
         bytes: { type: 'integer', minimum: 0 }
       },
@@ -214,7 +218,7 @@ const definitions: ToolDefinition[] = [
       type: 'object',
       required: ['executable', 'args'],
       properties: {
-        executable: { type: 'string', enum: ['node', 'npm', 'git'] },
+        executable: { type: 'string', enum: ['node', 'npm', 'python', 'pytest', 'git'] },
         args: {
           type: 'array',
           maxItems: 50,
@@ -510,8 +514,14 @@ export class ToolExecutor implements ToolRegistrationPort {
       ) {
         throw new AppError(
           'VALIDATION_ERROR',
-          'Patch edits overlap or address lines outside the current file',
-          { path: requestedPath, edit }
+          'Patch edits overlap or address lines outside the current file. Each edit must describe one non-overlapping range in the original file; combine replacement lines into one edit instead of using separate delete and insert edits at the same startLine.',
+          {
+            category: 'INVALID_PATCH_EDITS',
+            path: requestedPath,
+            lineCount: lines.length,
+            edit,
+            hint: 'Use one edit per range. For a replacement, set deleteCount to the number of original lines and put the replacement lines in that same edit.'
+          }
         );
       }
       starts.add(edit.startIndex);
@@ -554,7 +564,12 @@ export class ToolExecutor implements ToolRegistrationPort {
     }
     const workspace = await this.workspaceManager.resolve(context.workspacePath, '.');
     return {
-      output: await this.commandRunner.run(workspace, request, context.signal)
+      output: await this.commandRunner.run(
+        workspace,
+        request,
+        context.signal,
+        context.projectSourcePath
+      )
     };
   }
 
@@ -614,12 +629,30 @@ export class ToolExecutor implements ToolRegistrationPort {
       return {
         path: normalizedRelative(requestedPath),
         content: text,
+        lineCount: this.fileLines(text).length,
+        numberedContent: this.numberedContent(text),
         hash: contentHash(content),
         bytes: content.length
       };
     } finally {
       await handle.close();
     }
+  }
+
+  private numberedContent(text: string): string {
+    const lines = this.fileLines(text);
+    const width = Math.max(1, String(lines.length).length);
+    return lines
+      .map((line, index) => `${String(index + 1).padStart(width, ' ')} | ${line}`)
+      .join('\n');
+  }
+
+  private fileLines(text: string): string[] {
+    const lines = text.length === 0 ? [] : text.split(/\r\n|\r|\n/);
+    if (lines.length > 0 && lines.at(-1) === '' && /(?:\r\n|\r|\n)$/.test(text)) {
+      lines.pop();
+    }
+    return lines;
   }
 
   private async replaceFile(

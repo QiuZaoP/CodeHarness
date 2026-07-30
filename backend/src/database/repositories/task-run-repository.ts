@@ -61,12 +61,13 @@ export class TaskRunRepository {
     this.assertCheckpoint(checkpoint);
     const result = this.database
       .prepare(
-        'UPDATE task_run_checkpoints SET state_json = ?, history_summary = ?, summarized_message_count = ?, updated_at = ?, version = version + 1 WHERE task_id = ? AND run_id = ? AND version = ?'
+        'UPDATE task_run_checkpoints SET state_json = ?, history_summary = ?, summarized_message_count = ?, started_at = ?, updated_at = ?, version = version + 1 WHERE task_id = ? AND run_id = ? AND version = ?'
       )
       .run(
         stringifyStoredJson(checkpoint.state, `task ${checkpoint.taskId} run state`),
         checkpoint.historySummary ?? null,
         checkpoint.summarizedMessageCount,
+        checkpoint.startedAt,
         checkpoint.updatedAt,
         checkpoint.taskId,
         checkpoint.runId,

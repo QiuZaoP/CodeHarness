@@ -210,6 +210,7 @@ function mapBackendTask(task: BackendTask): WorkspaceSnapshot['task'] {
     startedAt: task.createdAt,
     elapsed: '运行中',
     model: 'Harness runtime',
+    stopReason: task.stopReason,
     steps:
       task.plan?.steps.map((step) => ({
         id: step.id,
@@ -327,13 +328,14 @@ export function createWorkspaceApi(apiBaseUrl = configuredApiBaseUrl) {
           )
         : [];
       const activeTask = activeSession ? tasksBySession.get(activeSession.id) : undefined;
-      const changes = activeTask
-        ? (
-            await request<BackendFileChange[]>(
-              `/api/v1/tasks/${encodeURIComponent(activeTask.id)}/changes`
-            )
-          ).map(mapBackendChange)
-        : [];
+      const changes =
+        activeTask && activeTask.status !== 'CANCELLED'
+          ? (
+              await request<BackendFileChange[]>(
+                `/api/v1/tasks/${encodeURIComponent(activeTask.id)}/changes`
+              )
+            ).map(mapBackendChange)
+          : [];
 
       return {
         ...emptySnapshot,
@@ -443,13 +445,14 @@ export function createWorkspaceApi(apiBaseUrl = configuredApiBaseUrl) {
       const latestTask = [...tasks].sort((left, right) =>
         right.updatedAt.localeCompare(left.updatedAt)
       )[0];
-      const changes = latestTask
-        ? (
-            await request<BackendFileChange[]>(
-              `/api/v1/tasks/${encodeURIComponent(latestTask.id)}/changes`
-            )
-          ).map(mapBackendChange)
-        : [];
+      const changes =
+        latestTask && latestTask.status !== 'CANCELLED'
+          ? (
+              await request<BackendFileChange[]>(
+                `/api/v1/tasks/${encodeURIComponent(latestTask.id)}/changes`
+              )
+            ).map(mapBackendChange)
+          : [];
       return {
         messages: backendMessages.map(mapBackendMessage),
         task: latestTask ? mapBackendTask(latestTask) : undefined,
@@ -475,22 +478,20 @@ export function createWorkspaceApi(apiBaseUrl = configuredApiBaseUrl) {
         };
       }
 
-      await request<BackendMessage>(`/api/v1/sessions/${encodeURIComponent(sessionId)}/messages`, {
-        method: 'POST',
-        body: JSON.stringify({ content })
-      });
+      const persistedMessage = await request<BackendMessage>(
+        `/api/v1/sessions/${encodeURIComponent(sessionId)}/messages`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ content })
+        }
+      );
       const task = await request<BackendTask>('/api/v1/tasks', {
         method: 'POST',
         body: JSON.stringify({ projectId, sessionId, goal: content })
       });
       return {
         task,
-        message: {
-          id: `assistant-${task.id}`,
-          role: 'assistant',
-          content: '已创建任务。Harness 正在执行前置检查和规划，请查看任务进度。',
-          createdAt: formatTime(new Date().toISOString())
-        }
+        message: mapBackendMessage(persistedMessage)
       };
     },
 
@@ -588,12 +589,12 @@ export function createWorkspaceApi(apiBaseUrl = configuredApiBaseUrl) {
       return mapBackendChange(updated);
     },
 
-    async rollbackTask(taskId: string): Promise<void> {
+    async rollbackTask(taskId: string): Promise<BackendTask | undefined> {
       if (useMock) {
         await delay(220);
         return;
       }
-      await request(`/api/v1/tasks/${encodeURIComponent(taskId)}/rollback`, {
+      return request<BackendTask>(`/api/v1/tasks/${encodeURIComponent(taskId)}/rollback`, {
         method: 'POST'
       });
     },

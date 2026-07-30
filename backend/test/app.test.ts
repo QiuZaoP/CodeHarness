@@ -56,6 +56,14 @@ describe('backend API', () => {
     expect(health.statusCode).toBe(200);
     expect(health.headers['x-request-id']).toBe('api-test-1');
     expect(health.headers['access-control-allow-origin']).toBe('http://localhost:5173');
+    const alternateDevPortHealth = await app.inject({
+      method: 'GET',
+      url: '/api/health',
+      headers: { origin: 'http://127.0.0.1:5174' }
+    });
+    expect(alternateDevPortHealth.headers['access-control-allow-origin']).toBe(
+      'http://127.0.0.1:5174'
+    );
     const projectResponse = await app.inject({
       method: 'POST',
       url: '/api/v1/projects',
@@ -290,13 +298,13 @@ describe('backend API', () => {
       {
         headers: {
           'Last-Event-ID': String(reconnectAfter),
-          Origin: 'http://localhost:5173'
+          Origin: 'http://localhost:5174'
         },
         signal: streamAbort.signal
       }
     );
     expect(eventResponse.status).toBe(200);
-    expect(eventResponse.headers.get('access-control-allow-origin')).toBe('http://localhost:5173');
+    expect(eventResponse.headers.get('access-control-allow-origin')).toBe('http://localhost:5174');
     expect(eventResponse.headers.get('vary')).toContain('Origin');
     const eventReader = eventResponse.body!.getReader();
     const replayChunk = await eventReader.read();

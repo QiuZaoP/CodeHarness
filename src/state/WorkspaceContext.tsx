@@ -107,6 +107,39 @@ function statusFromEvent(event: WorkspaceEvent): WorkspaceSnapshot['task']['stat
   return null;
 }
 
+function reconcileSubmittedMessage(
+  messages: Message[],
+  optimisticMessageId: string,
+  persistedMessage: Message
+): Message[] {
+  if (messages.some((message) => message.id === persistedMessage.id)) {
+    return messages.filter((message) => message.id !== optimisticMessageId);
+  }
+
+  if (persistedMessage.role === 'assistant') {
+    return [...messages, persistedMessage];
+  }
+
+  const optimisticIndex = messages.findIndex((message) => message.id === optimisticMessageId);
+  if (optimisticIndex === -1) {
+    return [...messages, persistedMessage];
+  }
+
+  const nextMessages = [...messages];
+  nextMessages[optimisticIndex] = persistedMessage;
+  return nextMessages;
+}
+
+function mergeSessionMessages(currentMessages: Message[], persistedMessages: Message[]): Message[] {
+  const merged = [...persistedMessages];
+  for (const message of currentMessages) {
+    if (!merged.some((candidate) => candidate.id === message.id)) {
+      merged.push(message);
+    }
+  }
+  return merged;
+}
+
 export function WorkspaceProvider({ children }: PropsWithChildren) {
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
@@ -143,6 +176,7 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
   }, []);
 
   const taskId = snapshot?.task.id;
+  const activeSessionId = snapshot?.activeSessionId;
 
   useEffect(() => {
     if (!taskId) {
@@ -150,7 +184,28 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
     }
 
     return workspaceEvents.subscribe(taskId, (event) => {
-      if (event.type === 'task.completed' || event.type === 'change.updated') {
+      if ((event.type === 'task.completed' || event.type === 'task.cancelled') && activeSessionId) {
+        void workspaceApi
+          .getSessionState(activeSessionId)
+          .then((state) => {
+            setSnapshot((current) =>
+              current?.task.id === event.taskId && current.activeSessionId === activeSessionId
+                ? {
+                    ...current,
+                    task: state.task ?? current.task,
+                    messages: {
+                      ...current.messages,
+                      [activeSessionId]: state.messages
+                    },
+                    changes: state.changes
+                  }
+                : current
+            );
+          })
+          .catch((caught: unknown) => {
+            setError(caught instanceof Error ? caught.message : '浼氳瘽鍔犺浇澶辫触');
+          });
+      } else if (event.type === 'change.updated') {
         void workspaceApi
           .getChanges(event.taskId)
           .then((changes) => {
@@ -184,7 +239,9 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
                   ? 'Task was cancelled. No further tools will run.'
                   : event.type === 'task.paused'
                     ? 'Task is paused. You can resume it when ready.'
-                    : undefined;
+                    : event.type === 'task.waiting_user'
+                      ? String(event.payload.message || 'Task is waiting for user input.')
+                      : undefined;
           const terminalMessageId = completionMessageId ?? `event-${event.id}`;
           const activeMessages = current.activeSessionId
             ? current.messages[current.activeSessionId] || []
@@ -195,7 +252,16 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
             !activeMessages.some((message) => message.id === terminalMessageId);
           return {
             ...current,
-            task: { ...current.task, status: nextStatus },
+            task: {
+              ...current.task,
+              status: nextStatus,
+              stopReason:
+                event.type === 'task.waiting_user'
+                  ? String(event.payload.message || 'Task is waiting for user input.')
+                  : ['task.resumed', 'task.completed', 'task.applied'].includes(event.type)
+                    ? undefined
+                    : current.task.stopReason
+            },
             sessions: current.sessions.map((session) =>
               session.id === current.activeSessionId
                 ? {
@@ -268,7 +334,7 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
         return current;
       });
     });
-  }, [taskId]);
+  }, [activeSessionId, taskId]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -385,7 +451,7 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
       }
 
       const userMessage: Message = {
-        id: `user-${Date.now()}`,
+        id: `optimistic-user-${Date.now()}`,
         role: 'user',
         content: trimmed,
         createdAt: currentTime()
@@ -427,8 +493,29 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
               task: result.task ? taskFromBackend(result.task) : current.task,
               messages: {
                 ...current.messages,
-                [activeSessionId]: [...(current.messages[activeSessionId] || []), result.message]
+                [activeSessionId]: reconcileSubmittedMessage(
+                  current.messages[activeSessionId] || [],
+                  userMessage.id,
+                  result.message
+                )
               }
+            }
+          : current
+      );
+      const state = await workspaceApi.getSessionState(activeSessionId);
+      setSnapshot((current) =>
+        current
+          ? {
+              ...current,
+              task: state.task || current.task,
+              messages: {
+                ...current.messages,
+                [activeSessionId]: mergeSessionMessages(
+                  current.messages[activeSessionId] || [],
+                  state.messages
+                )
+              },
+              changes: state.changes
             }
           : current
       );
@@ -571,19 +658,16 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
       return;
     }
 
-    await workspaceApi.rollbackTask(snapshot.task.id);
+    const task = await workspaceApi.rollbackTask(snapshot.task.id);
     setSnapshot((current) =>
       current
         ? {
             ...current,
-            task: { ...current.task, status: 'CANCELLED' },
+            task: task ? taskFromBackend(task) : { ...current.task, status: 'CANCELLED' },
             sessions: current.sessions.map((session) =>
               session.id === current.activeSessionId ? { ...session, status: 'cancelled' } : session
             ),
-            changes: current.changes.map((change) => ({
-              ...change,
-              decision: 'rejected'
-            }))
+            changes: []
           }
         : current
     );

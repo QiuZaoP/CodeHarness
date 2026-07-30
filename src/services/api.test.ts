@@ -172,6 +172,17 @@ describe('workspaceApi real backend contract', () => {
             updatedAt: '2026-01-01T00:01:00.000Z'
           });
         }
+        if (url.pathname.endsWith('/rollback')) {
+          return jsonResponse({
+            id: 'task-1',
+            sessionId: 'session-1',
+            projectId: 'project-1',
+            goal: 'Fix login',
+            status: 'CANCELLED',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            updatedAt: '2026-01-01T00:02:00.000Z'
+          });
+        }
         return jsonResponse({
           id: 'change-1',
           taskId: 'task-1',
@@ -191,6 +202,7 @@ describe('workspaceApi real backend contract', () => {
     await api.controlTask('task-1', 'resume');
     const change = await api.decideChange('task-1', 'change-1', 'accepted', 3);
     await api.applyTask('task-1');
+    await api.rollbackTask('task-1');
 
     expect(calls).toEqual(
       expect.arrayContaining([
@@ -214,6 +226,12 @@ describe('workspaceApi real backend contract', () => {
         },
         {
           path: '/api/v1/tasks/task-1/apply',
+          method: 'POST',
+          body: undefined,
+          contentType: undefined
+        },
+        {
+          path: '/api/v1/tasks/task-1/rollback',
           method: 'POST',
           body: undefined,
           contentType: undefined

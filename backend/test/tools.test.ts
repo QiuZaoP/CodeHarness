@@ -4,6 +4,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { config } from '../src/config.js';
+import { parseAllowedCommand } from '../src/command-runner.js';
 import type { ToolExecutionContext } from '../src/ports/tool-registry.js';
 import { ToolRegistry } from '../src/tool-registry.js';
 import { ToolExecutor } from '../src/tools.js';
@@ -60,6 +61,38 @@ function output<T>(result: ToolResult): T {
 }
 
 describe('registered tool runtime', () => {
+  it('parses verification commands using the same command policy as run_command', () => {
+    expect(parseAllowedCommand('git diff')).toEqual({ executable: 'git', args: ['diff'] });
+    expect(parseAllowedCommand('git diff --check')).toEqual({
+      executable: 'git',
+      args: ['diff', '--check']
+    });
+    expect(parseAllowedCommand('node --check src/main.mjs')).toEqual({
+      executable: 'node',
+      args: ['--check', 'src/main.mjs']
+    });
+    expect(parseAllowedCommand('python -m pytest tests/test_parser.py -x --timeout=20')).toEqual({
+      executable: 'python',
+      args: ['-m', 'pytest', 'tests/test_parser.py', '-x', '--timeout=20']
+    });
+    expect(parseAllowedCommand('pytest tests/test_parser.py')).toEqual({
+      executable: 'pytest',
+      args: ['tests/test_parser.py']
+    });
+    expect(() => parseAllowedCommand('python scripts/check.py')).toThrow(
+      'Executable or subcommand is not allowed by policy'
+    );
+    expect(() => parseAllowedCommand('python -m pytest ../outside.py')).toThrow(
+      'Executable or subcommand is not allowed by policy'
+    );
+    expect(() => parseAllowedCommand('cat tests/conftest.py')).toThrow(
+      'Verification command is not allowed by policy'
+    );
+    expect(() => parseAllowedCommand('git diff -- tests/conftest.py')).toThrow(
+      'Executable or subcommand is not allowed by policy'
+    );
+  });
+
   it('validates registration, arguments, output and permissions before execution', async () => {
     const { tools, context } = await fixture();
     expect(tools.definitions().map(({ name }) => name)).toEqual([
@@ -171,10 +204,17 @@ describe('registered tool runtime', () => {
 
   it('applies hash-checked structured edits and reports complete file changes', async () => {
     const { workspace, tools, context } = await fixture();
-    const read = output<{ hash: string; content: string }>(
+    const read = output<{
+      hash: string;
+      content: string;
+      lineCount: number;
+      numberedContent: string;
+    }>(
       await tools.execute({ name: 'read_file', arguments: { path: 'README.md' } }, context)
     );
     expect(read.content).toBe('first\nsecond\nthird\n');
+    expect(read.lineCount).toBe(3);
+    expect(read.numberedContent).toBe('1 | first\n2 | second\n3 | third');
 
     const patched = output<{ hash: string; previousHash: string }>(
       await tools.execute(
@@ -208,6 +248,32 @@ describe('registered tool runtime', () => {
     expect(stale).toMatchObject({
       status: 'FAILED',
       error: { code: 'CONFLICT', retryable: false }
+    });
+
+    const invalidPatch = await tools.execute(
+      {
+        name: 'apply_patch',
+        arguments: {
+          path: 'README.md',
+          expectedHash: patched.hash,
+          edits: [
+            { startLine: 1, deleteCount: 1, lines: ['first'] },
+            { startLine: 1, deleteCount: 0, lines: ['duplicate range'] }
+          ]
+        }
+      },
+      context
+    );
+    expect(invalidPatch).toMatchObject({
+      status: 'FAILED',
+      error: {
+        code: 'VALIDATION_ERROR',
+        details: {
+          category: 'INVALID_PATCH_EDITS',
+          lineCount: expect.any(Number),
+          hint: expect.stringContaining('one edit')
+        }
+      }
     });
 
     const created = await tools.execute(
@@ -325,6 +391,32 @@ describe('registered tool runtime', () => {
       error: { code: 'TASK_CANCELLED', retryable: false }
     });
   }, 20_000);
+
+  it('accepts CRLF as a line ending in diff whitespace verification', async () => {
+    const { workspace, tools, context } = await fixture();
+    await fs.writeFile(path.join(workspace, 'README.md'), 'first\r\nsecond\r\nthird\r\n', 'utf8');
+
+    const result = output<{ code: number; stdout: string; stderr: string }>(
+      await tools.execute(
+        { name: 'run_command', arguments: { executable: 'git', args: ['diff', '--check'] } },
+        context
+      )
+    );
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toBe('');
+
+    await fs.writeFile(path.join(workspace, 'README.md'), 'first\r\nsecond \r\nthird\r\n', 'utf8');
+    const whitespaceError = output<{ code: number; stdout: string }>(
+      await tools.execute(
+        { name: 'run_command', arguments: { executable: 'git', args: ['diff', '--check'] } },
+        context
+      )
+    );
+    expect(whitespaceError.code).toBe(2);
+    expect(whitespaceError.stdout).toContain('trailing whitespace');
+  });
 
   it('serializes side-effect tools for the same workspace', async () => {
     const { tools, context } = await fixture();

@@ -131,6 +131,7 @@ export class DeepSeekModelGateway implements ModelGateway {
             model: this.config.chat.model,
             signal: controlledSignal,
             structured: true,
+            thinking: 'disabled',
             maxResponseBytes: this.config.maxResponseBytes,
             onDelta: (delta) => onStreamEvent?.({ type: 'STRUCTURED_DELTA', delta }),
             onUsage: (usage) =>
@@ -178,6 +179,7 @@ export class DeepSeekModelGateway implements ModelGateway {
             model: this.config.summary.model,
             signal: controlledSignal,
             structured: false,
+            thinking: 'disabled',
             maxResponseBytes: this.config.maxResponseBytes,
             onDelta: (delta) => onStreamEvent?.({ type: 'TEXT_DELTA', delta }),
             onUsage: (usage) =>

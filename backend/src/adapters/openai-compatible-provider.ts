@@ -15,6 +15,7 @@ export interface ChatOptions {
   model: string;
   signal: AbortSignal;
   structured: boolean;
+  thinking?: 'enabled' | 'disabled';
   maxResponseBytes?: number;
   onDelta?: (delta: string) => void;
   onUsage?: (usage: ProviderUsage) => void;
@@ -92,6 +93,7 @@ export class OpenAICompatibleProvider {
       max_tokens: this.gateway.maxOutputTokens
     };
     if (options.structured) body.response_format = { type: 'json_object' };
+    if (options.thinking) body.thinking = { type: options.thinking };
     let emitted = false;
     const result = await withRetries(
       async () => {

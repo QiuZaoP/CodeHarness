@@ -60,6 +60,18 @@ function isValidationError(error: unknown): error is { validation: unknown } {
   return typeof error === 'object' && error !== null && 'validation' in error;
 }
 
+function isAllowedCorsOrigin(origin: string | undefined): boolean {
+  if (!origin || config.corsOrigins.includes('*') || config.corsOrigins.includes(origin)) {
+    return true;
+  }
+
+  // Vite moves to the next local port when the configured port is occupied.
+  // Keep this convenience limited to development; production remains an explicit allowlist.
+  return (
+    config.nodeEnv !== 'production' && /^https?:\/\/(?:localhost|127\.0\.0\.1):\d+$/.test(origin)
+  );
+}
+
 export interface AppDependencies {
   database?: AppDatabase;
   workspaceManager?: WorkspaceManager;
@@ -168,7 +180,7 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
 
   app.addSchema(domainSchema);
   app.register(cors, {
-    origin: config.corsOrigins.includes('*') ? true : config.corsOrigins,
+    origin: (origin, callback) => callback(null, isAllowedCorsOrigin(origin)),
     exposedHeaders: ['x-request-id']
   });
   app.addHook('onRequest', async (request, reply) => {
@@ -494,7 +506,9 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
       const task = await harness.createTask(projectId, sessionId, goal);
       // Start immediately so a lost client response cannot leave a persisted task in CREATED.
       scheduler.start(task.id);
-      return reply.code(201).send(task);
+      // Let the runner enter its first lifecycle phase before returning the task snapshot.
+      await Promise.resolve();
+      return reply.code(201).send(harness.getTask(task.id));
     }
   );
 
@@ -664,8 +678,7 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
       const after = eventCursor(request.query.after, request.headers['last-event-id']);
       const requestOrigin = request.headers.origin;
       const corsHeaders =
-        requestOrigin &&
-        (config.corsOrigins.includes('*') || config.corsOrigins.includes(requestOrigin))
+        requestOrigin && isAllowedCorsOrigin(requestOrigin)
           ? {
               'Access-Control-Allow-Origin': requestOrigin,
               Vary: 'Origin'

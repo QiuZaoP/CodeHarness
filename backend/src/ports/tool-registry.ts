@@ -2,6 +2,7 @@ import type { ToolCall, ToolDefinition, ToolPermission, ToolResult } from '../ty
 
 export interface ToolExecutionContext {
   workspacePath: string;
+  projectSourcePath?: string;
   permissions: readonly ToolPermission[];
   signal?: AbortSignal;
 }

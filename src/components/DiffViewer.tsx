@@ -43,6 +43,7 @@ export function DiffViewer() {
     snapshot.task.status === 'READY_FOR_REVIEW' &&
     pending.length === 0 &&
     snapshot.changes.some((change) => change.decision === 'accepted');
+  const canRollback = ['READY_FOR_REVIEW', 'PAUSED', 'WAITING_USER'].includes(snapshot.task.status);
 
   const decideAll = async (decision: FileChange['decision']) => {
     await Promise.all(pending.map((change) => decideChange(change.id, decision)));
@@ -80,6 +81,7 @@ export function DiffViewer() {
           <button
             className="button button--secondary button--compact"
             onClick={() => setConfirmRollback(true)}
+            disabled={!canRollback}
           >
             <RotateCcw size={14} />
             回滚任务

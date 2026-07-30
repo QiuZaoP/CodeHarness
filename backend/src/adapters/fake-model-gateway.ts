@@ -107,7 +107,7 @@ export class FakeModelGateway implements ModelGateway {
       return {
         type: 'COMPLETE',
         reason: 'The plan and verification are complete',
-        summary: 'Inspected the project and completed baseline verification'
+        summary: FakeModelGateway.completionSummary(request)
       };
     }
     const goal =
@@ -126,5 +126,68 @@ export class FakeModelGateway implements ModelGateway {
         verification: ['node --version']
       }
     };
+  }
+
+  private static completionSummary(request: DecisionRequest): string {
+    const goal =
+      request.context.find(({ reference }) => reference.source === 'user-goal')?.content ??
+      request.runState.plan?.goal ??
+      '';
+    if (!/(入口|技术栈|tech\s*stack|entry|stack)/i.test(goal)) {
+      return 'Inspected the project and completed baseline verification';
+    }
+
+    const overview = request.context
+      .filter(({ reference }) => reference.kind === 'PROJECT_OVERVIEW')
+      .map(({ content }) => this.parseProjectOverview(content))
+      .find((candidate) => candidate);
+    const entryFiles = overview?.entryFiles ?? [];
+    const languages = overview?.languages ?? [];
+    const buildCommands = overview?.buildCommands ?? [];
+    if (/[\u4e00-\u9fff]/.test(goal)) {
+      return [
+        `项目入口：${entryFiles.length ? entryFiles.join('、') : '未在索引中识别到明确入口文件'}`,
+        `主要技术栈：${languages.length ? languages.join('、') : '未识别到主要语言'}`,
+        buildCommands.length ? `常用脚本：${buildCommands.join('、')}` : undefined
+      ]
+        .filter(Boolean)
+        .join('。');
+    }
+    return [
+      `Project entry: ${entryFiles.length ? entryFiles.join(', ') : 'no clear entry file detected'}`,
+      `Primary stack: ${languages.length ? languages.join(', ') : 'no primary languages detected'}`,
+      buildCommands.length ? `Common commands: ${buildCommands.join(', ')}` : undefined
+    ]
+      .filter(Boolean)
+      .join('. ');
+  }
+
+  private static parseProjectOverview(content: string):
+    | {
+        entryFiles?: string[];
+        languages?: string[];
+        buildCommands?: string[];
+      }
+    | undefined {
+    try {
+      const parsed = JSON.parse(content) as {
+        entryFiles?: unknown;
+        languages?: unknown;
+        buildCommands?: unknown;
+      };
+      return {
+        entryFiles: Array.isArray(parsed.entryFiles)
+          ? parsed.entryFiles.filter((item): item is string => typeof item === 'string')
+          : undefined,
+        languages: Array.isArray(parsed.languages)
+          ? parsed.languages.filter((item): item is string => typeof item === 'string')
+          : undefined,
+        buildCommands: Array.isArray(parsed.buildCommands)
+          ? parsed.buildCommands.filter((item): item is string => typeof item === 'string')
+          : undefined
+      };
+    } catch {
+      return undefined;
+    }
   }
 }

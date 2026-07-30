@@ -145,7 +145,7 @@ export function loadGatewayConfig(environment: Environment = process.env): Gatew
       model: 'rerank-v3.5',
       baseUrl: 'https://api.jina.ai/v1'
     }),
-    timeoutMs: positiveInt(environment, 'MODEL_TIMEOUT_MS', 30_000),
+    timeoutMs: positiveInt(environment, 'MODEL_TIMEOUT_MS', 120_000),
     maxRetries: positiveInt(environment, 'MODEL_MAX_RETRIES', 2, true),
     retryBaseDelayMs: positiveInt(environment, 'MODEL_RETRY_BASE_DELAY_MS', 250, true),
     circuitFailureThreshold: positiveInt(environment, 'MODEL_CIRCUIT_FAILURE_THRESHOLD', 3),

@@ -59,6 +59,7 @@ export type TaskRun = {
   startedAt: string;
   elapsed: string;
   model: string;
+  stopReason?: string;
   steps: TaskStep[];
   toolCalls: ToolCall[];
 };

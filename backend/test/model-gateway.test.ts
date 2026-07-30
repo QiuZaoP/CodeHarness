@@ -5,11 +5,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { GatewayConfig } from '../src/model-gateway/config.js';
 import { loadGatewayConfig, resolveApiKey } from '../src/model-gateway/config.js';
+import { loadConfig } from '../src/config.js';
 import { ModelGatewayError } from '../src/model-gateway/errors.js';
 import type { FetchLike, HttpResponse } from '../src/model-gateway/http.js';
 import { GatewayMetrics } from '../src/model-gateway/metrics.js';
+import { buildDecisionMessages } from '../src/model-gateway/prompts.js';
 import { parseModelDecision } from '../src/model-gateway/structured.js';
 import { DeepSeekModelGateway } from '../src/adapters/deepseek-model-gateway.js';
+import { FakeModelGateway } from '../src/adapters/fake-model-gateway.js';
 import { FallbackModelGateway } from '../src/adapters/fallback-model-gateway.js';
 import { GuardedModelGateway } from '../src/adapters/guarded-model-gateway.js';
 import type {
@@ -171,6 +174,14 @@ test('inherits chat cost prices for summary unless summary prices are explicitly
   assert.equal(overridden.summary.outputPricePerMillion, 2);
 });
 
+test('keeps the outer model timeout aligned with the request timeout by default', () => {
+  const gateway = loadGatewayConfig({ DEEPSEEK_API_KEY: 'fixture-key' });
+  assert.equal(gateway.timeoutMs, 120_000);
+
+  const configured = loadConfig({ MODEL_TIMEOUT_MS: '90000' });
+  assert.equal(configured.maxModelTimeoutMs, 90_000);
+});
+
 test('validates every supported structured decision type and rejects invalid JSON', () => {
   assert.equal(
     parseModelDecision('{"type":"COMPLETE","reason":"done","summary":"ok"}').type,
@@ -223,6 +234,74 @@ test('validates every supported structured decision type and rejects invalid JSO
   );
 });
 
+test('documents the boundary between file tools and allowlisted verification commands', () => {
+  const systemPrompt = buildDecisionMessages(decisionRequest)[0]?.content ?? '';
+  assert.match(systemPrompt, /read_file to read file contents/);
+  assert.match(systemPrompt, /git_diff to inspect a complete diff/);
+  assert.match(systemPrompt, /git diff or git diff --check as the final verification command/);
+  assert.match(systemPrompt, /Never put cat/);
+  assert.match(systemPrompt, /plan\.verification array contains acceptance criteria/);
+  assert.match(systemPrompt, /not to a shell/);
+  assert.match(systemPrompt, /run_command is an internal verification implementation/);
+  assert.match(systemPrompt, /3 to 5 outcome-oriented steps/);
+  assert.match(systemPrompt, /avoid rerunning the same suite after every small patch/);
+});
+
+test('places harness correction feedback in the trusted system instruction', () => {
+  const instruction = 'Do not repeat read_file; apply the repair now.';
+  const messages = buildDecisionMessages({ ...decisionRequest, harnessInstruction: instruction });
+  assert.match(messages[0]?.content ?? '', /Trusted harness instruction/);
+  assert.match(
+    messages[0]?.content ?? '',
+    new RegExp(instruction.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  );
+  assert.doesNotMatch(messages[1]?.content ?? '', /harness-validation/);
+});
+
+test('fake gateway summarizes project entry and stack questions from overview context', async () => {
+  const gateway = new FakeModelGateway();
+  const response = await gateway.decide(
+    {
+      ...decisionRequest,
+      runState: {
+        ...runState,
+        phase: 'EXECUTING',
+        plan: {
+          goal: '项目入口在哪里，主要用了哪些技术栈',
+          assumptions: [],
+          steps: [
+            { id: 'inspect', title: 'Inspect project files', status: 'DONE' },
+            { id: 'verify', title: 'Run baseline verification', status: 'DONE' }
+          ],
+          verification: ['node --version']
+        },
+        toolCallIds: ['tool-1', 'tool-2', 'tool-3'],
+        verificationResultIds: ['verification-1'],
+        lastVerificationPassed: true
+      },
+      context: [
+        {
+          reference: { ref: 'goal', kind: 'SUMMARY', source: 'user-goal' },
+          content: '项目入口在哪里，主要用了哪些技术栈'
+        },
+        {
+          reference: { ref: 'overview', kind: 'PROJECT_OVERVIEW', source: 'code-index' },
+          content: JSON.stringify({
+            entryFiles: ['src/main.tsx', 'backend/src/server.ts'],
+            languages: ['TypeScript', 'TSX'],
+            buildCommands: ['npm run build']
+          })
+        }
+      ]
+    },
+    new AbortController().signal
+  );
+
+  assert.equal(response.decision.type, 'COMPLETE');
+  assert.match(response.decision.summary, /项目入口：src\/main\.tsx、backend\/src\/server\.ts/);
+  assert.match(response.decision.summary, /主要技术栈：TypeScript、TSX/);
+});
+
 test('calls DeepSeek-compatible chat, validates the decision, emits stream events, and records metrics', async () => {
   const events: string[] = [];
   let requestBody: Record<string, unknown> | undefined;
@@ -243,6 +322,7 @@ test('calls DeepSeek-compatible chat, validates the decision, emits stream event
   assert.ok(events.includes('STRUCTURED_DELTA'));
   assert.ok(events.includes('USAGE'));
   assert.equal((requestBody?.response_format as { type: string }).type, 'json_object');
+  assert.equal((requestBody?.thinking as { type: string }).type, 'disabled');
   assert.equal((requestBody?.messages as Array<{ role: string }>)[0].role, 'system');
   assert.equal(gateway.metrics.snapshot().successes, 1);
 });

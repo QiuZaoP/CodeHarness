@@ -62,6 +62,8 @@ export function loadConfig(environment: Environment = process.env) {
     }
   }
 
+  const modelTimeoutMs = intEnv(environment, 'MODEL_TIMEOUT_MS', 120_000);
+
   return {
     nodeEnv,
     host,
@@ -70,19 +72,19 @@ export function loadConfig(environment: Environment = process.env) {
     databasePath: path.resolve(environment.DATABASE_PATH ?? '.data/codeharness.sqlite'),
     workspaceRoot: path.resolve(environment.WORKSPACE_ROOT ?? '.data/workspaces'),
     maxTaskSteps: intEnv(environment, 'MAX_TASK_STEPS', 20),
-    maxCommandTimeoutMs: intEnv(environment, 'MAX_COMMAND_TIMEOUT_MS', 30_000),
+    maxCommandTimeoutMs: intEnv(environment, 'MAX_COMMAND_TIMEOUT_MS', 120_000),
     maxCommandOutputBytes: intEnv(environment, 'MAX_COMMAND_OUTPUT_BYTES', 1024 * 1024),
     maxReadFileBytes: intEnv(environment, 'MAX_READ_FILE_BYTES', 1024 * 1024),
     maxToolArgumentBytes: intEnv(environment, 'MAX_TOOL_ARGUMENT_BYTES', 256 * 1024),
     maxToolOutputBytes: intEnv(environment, 'MAX_TOOL_OUTPUT_BYTES', 1024 * 1024),
     taskLeaseTtlMs: intEnv(environment, 'TASK_LEASE_TTL_MS', 15_000),
     taskControlPollMs: intEnv(environment, 'TASK_CONTROL_POLL_MS', 250),
-    maxModelTimeoutMs: intEnv(environment, 'MAX_MODEL_TIMEOUT_MS', 30_000),
+    maxModelTimeoutMs: intEnv(environment, 'MAX_MODEL_TIMEOUT_MS', modelTimeoutMs),
     maxIndexTimeoutMs: intEnv(environment, 'MAX_INDEX_TIMEOUT_MS', 30_000),
     maxTaskDurationMs: intEnv(environment, 'MAX_TASK_DURATION_MS', 15 * 60_000),
     maxTaskToolCalls: intEnv(environment, 'MAX_TASK_TOOL_CALLS', 80),
     maxTaskChangedFiles: intEnv(environment, 'MAX_TASK_CHANGED_FILES', 100),
-    maxModelInputTokens: intEnv(environment, 'MAX_MODEL_INPUT_TOKENS', 120_000),
+    maxModelInputTokens: intEnv(environment, 'MAX_MODEL_INPUT_TOKENS', 240_000),
     maxModelOutputTokens: intEnv(environment, 'MAX_MODEL_OUTPUT_TOKENS', 16_000),
     maxModelCost: numberEnv(environment, 'MAX_MODEL_COST', 10),
     maxContextBytes: intEnv(environment, 'MAX_CONTEXT_BYTES', 64 * 1024),

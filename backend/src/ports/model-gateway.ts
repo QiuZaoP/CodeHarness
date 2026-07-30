@@ -13,6 +13,7 @@ export interface DecisionRequest {
     content: string;
   }>;
   availableTools: readonly ToolDefinition[];
+  harnessInstruction?: string;
 }
 
 export type ModelStreamEvent =
