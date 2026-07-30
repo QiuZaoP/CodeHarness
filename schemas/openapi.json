@@ -1,0 +1,2072 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "CodeHarness Backend API",
+    "version": "0.1.0"
+  },
+  "x-contract-schema-version": "1.0.0",
+  "servers": [
+    {
+      "url": "http://127.0.0.1:3000"
+    }
+  ],
+  "paths": {
+    "/api/health": {
+      "get": {
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "description": "Service health",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/health"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/openapi.json": {
+      "get": {
+        "operationId": "getOpenApi",
+        "responses": {
+          "200": {
+            "description": "OpenAPI 3.1 document",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/metrics": {
+      "get": {
+        "operationId": "getRuntimeMetrics",
+        "responses": {
+          "200": {
+            "description": "Runtime quality metrics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/runtimeMetrics"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/projects": {
+      "get": {
+        "operationId": "listProjects",
+        "responses": {
+          "200": {
+            "description": "Projects",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/projectSummary"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createProject",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/projectCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Project created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/projectSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}": {
+      "get": {
+        "operationId": "getProject",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Project summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/projectSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/search": {
+      "get": {
+        "operationId": "searchProject",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/id"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Text search results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/searchResult"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/files": {
+      "get": {
+        "operationId": "listProjectFiles",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Imported project file paths",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/projectFiles"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/files/{filePath}": {
+      "get": {
+        "operationId": "getProjectFile",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/id"
+            }
+          },
+          {
+            "name": "filePath",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Imported project text file",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/projectFileContent"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions": {
+      "get": {
+        "operationId": "listSessions",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Sessions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/session"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createSession",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/sessionCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Session created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/session"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{sessionId}": {
+      "get": {
+        "operationId": "getSession",
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/session"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/messages": {
+      "get": {
+        "operationId": "listMessages",
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session messages",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/message"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createMessage",
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/messageCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Message created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/message"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/tasks": {
+      "get": {
+        "operationId": "listTasks",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/id"
+            }
+          },
+          {
+            "name": "sessionId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tasks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/task"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createTask",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/taskCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Task created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/task"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}": {
+      "get": {
+        "operationId": "getTask",
+        "parameters": [
+          {
+            "name": "taskId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/task"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}/changes": {
+      "get": {
+        "operationId": "listTaskChanges",
+        "parameters": [
+          {
+            "name": "taskId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "File changes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/fileChange"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}/changes/{changeId}": {
+      "patch": {
+        "operationId": "decideTaskChange",
+        "parameters": [
+          {
+            "name": "taskId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/id"
+            }
+          },
+          {
+            "name": "changeId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/changeDecisionUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated file change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fileChange"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}/verifications": {
+      "get": {
+        "operationId": "listTaskVerifications",
+        "parameters": [
+          {
+            "name": "taskId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Verification results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/verificationResult"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}/report": {
+      "get": {
+        "operationId": "getTaskReport",
+        "parameters": [
+          {
+            "name": "taskId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Structured task report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/taskReport"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}/run": {
+      "post": {
+        "operationId": "runTask",
+        "parameters": [
+          {
+            "name": "taskId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Task accepted for background execution",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/task"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}/events": {
+      "get": {
+        "operationId": "subscribeTaskEvents",
+        "parameters": [
+          {
+            "name": "taskId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/id"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Server-sent event stream",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}/pause": {
+      "post": {
+        "operationId": "pauseTask",
+        "parameters": [
+          {
+            "name": "taskId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task paused",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/task"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}/resume": {
+      "post": {
+        "operationId": "resumeTask",
+        "parameters": [
+          {
+            "name": "taskId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Task accepted for resumed execution",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/task"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}/cancel": {
+      "post": {
+        "operationId": "cancelTask",
+        "parameters": [
+          {
+            "name": "taskId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task cancelled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/task"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}/apply": {
+      "post": {
+        "operationId": "applyTask",
+        "parameters": [
+          {
+            "name": "taskId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task changes applied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/task"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}/rollback": {
+      "post": {
+        "operationId": "rollbackTask",
+        "parameters": [
+          {
+            "name": "taskId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task workspace rolled back",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/task"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "health": {
+        "type": "object",
+        "required": ["status", "service", "version"],
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "ok"
+          },
+          "service": {
+            "type": "string",
+            "const": "codeharness-backend"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "projectCreate": {
+        "type": "object",
+        "required": ["name", "sourcePath"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "sourcePath": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "projectSummary": {
+        "type": "object",
+        "required": ["id", "name", "createdAt"],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/id"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/timestamp"
+          }
+        },
+        "additionalProperties": false
+      },
+      "id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "timestamp": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "projectFiles": {
+        "type": "object",
+        "required": ["files"],
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "projectFileContent": {
+        "type": "object",
+        "required": ["path", "content", "bytesRead", "truncated"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "content": {
+            "type": "string"
+          },
+          "bytesRead": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "searchResult": {
+        "type": "object",
+        "required": ["path", "line", "preview"],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "preview": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "sessionCreate": {
+        "type": "object",
+        "required": ["projectId"],
+        "properties": {
+          "projectId": {
+            "$ref": "#/components/schemas/id"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "additionalProperties": false
+      },
+      "session": {
+        "type": "object",
+        "required": ["id", "projectId", "title", "createdAt"],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/id"
+          },
+          "projectId": {
+            "$ref": "#/components/schemas/id"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/timestamp"
+          }
+        },
+        "additionalProperties": false
+      },
+      "messageCreate": {
+        "type": "object",
+        "required": ["content"],
+        "properties": {
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536
+          }
+        },
+        "additionalProperties": false
+      },
+      "message": {
+        "type": "object",
+        "required": ["id", "sessionId", "role", "content", "createdAt"],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/id"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/id"
+          },
+          "role": {
+            "$ref": "#/components/schemas/messageRole"
+          },
+          "content": {
+            "type": "string"
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/timestamp"
+          }
+        },
+        "additionalProperties": false
+      },
+      "messageRole": {
+        "type": "string",
+        "enum": ["USER", "ASSISTANT", "SYSTEM"]
+      },
+      "taskCreate": {
+        "type": "object",
+        "required": ["projectId", "sessionId", "goal"],
+        "properties": {
+          "projectId": {
+            "$ref": "#/components/schemas/id"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/id"
+          },
+          "goal": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "task": {
+        "type": "object",
+        "required": ["id", "sessionId", "projectId", "goal", "status", "createdAt", "updatedAt"],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/id"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/id"
+          },
+          "projectId": {
+            "$ref": "#/components/schemas/id"
+          },
+          "goal": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "$ref": "#/components/schemas/taskStatus"
+          },
+          "plan": {
+            "$ref": "#/components/schemas/plan"
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/timestamp"
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/timestamp"
+          },
+          "stopReason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "taskStatus": {
+        "type": "string",
+        "enum": [
+          "CREATED",
+          "PRECHECKING",
+          "PLANNING",
+          "EXECUTING",
+          "VERIFYING",
+          "READY_FOR_REVIEW",
+          "APPLIED",
+          "WAITING_USER",
+          "PAUSED",
+          "CANCELLED",
+          "FAILED"
+        ]
+      },
+      "plan": {
+        "type": "object",
+        "required": ["goal", "assumptions", "steps", "verification"],
+        "properties": {
+          "goal": {
+            "type": "string",
+            "minLength": 1
+          },
+          "assumptions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/planStep"
+            }
+          },
+          "verification": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "planStep": {
+        "type": "object",
+        "required": ["id", "title", "status"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "$ref": "#/components/schemas/planStepStatus"
+          }
+        },
+        "additionalProperties": false
+      },
+      "planStepStatus": {
+        "type": "string",
+        "enum": ["PENDING", "RUNNING", "DONE"]
+      },
+      "fileChange": {
+        "type": "object",
+        "required": [
+          "id",
+          "taskId",
+          "path",
+          "status",
+          "additions",
+          "deletions",
+          "patch",
+          "decision"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/id"
+          },
+          "taskId": {
+            "$ref": "#/components/schemas/id"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "$ref": "#/components/schemas/fileChangeStatus"
+          },
+          "additions": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "deletions": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "patch": {
+            "type": "string"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/changeDecision"
+          },
+          "toolCallId": {
+            "$ref": "#/components/schemas/id"
+          },
+          "stepId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "fileChangeStatus": {
+        "type": "string",
+        "enum": ["ADDED", "MODIFIED", "DELETED", "RENAMED"]
+      },
+      "changeDecision": {
+        "type": "string",
+        "enum": ["PENDING", "ACCEPTED", "REJECTED"]
+      },
+      "changeDecisionUpdate": {
+        "type": "object",
+        "required": ["decision", "expectedVersion"],
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": ["ACCEPTED", "REJECTED"]
+          },
+          "expectedVersion": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "verificationResult": {
+        "type": "object",
+        "required": ["id", "taskId", "command", "status", "outputSummary", "createdAt"],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/id"
+          },
+          "taskId": {
+            "$ref": "#/components/schemas/id"
+          },
+          "command": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/verificationStatus"
+          },
+          "exitCode": {
+            "type": "integer"
+          },
+          "outputSummary": {
+            "type": "string"
+          },
+          "failureCategory": {
+            "$ref": "#/components/schemas/verificationFailureCategory"
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/timestamp"
+          }
+        },
+        "additionalProperties": false
+      },
+      "verificationStatus": {
+        "type": "string",
+        "enum": ["PASSED", "FAILED", "ERROR", "SKIPPED"]
+      },
+      "verificationFailureCategory": {
+        "type": "string",
+        "enum": ["CODE", "TEST", "ENVIRONMENT", "BASELINE"]
+      },
+      "taskReport": {
+        "type": "object",
+        "required": [
+          "taskId",
+          "status",
+          "summary",
+          "changes",
+          "verifications",
+          "toolCalls",
+          "risks",
+          "generatedAt"
+        ],
+        "properties": {
+          "taskId": {
+            "$ref": "#/components/schemas/id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/taskStatus"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "plan": {
+            "$ref": "#/components/schemas/plan"
+          },
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/fileChange"
+            }
+          },
+          "verifications": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/verificationResult"
+            }
+          },
+          "toolCalls": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "name", "status"],
+              "properties": {
+                "id": {
+                  "$ref": "#/components/schemas/id"
+                },
+                "stepId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "name": {
+                  "$ref": "#/components/schemas/toolName"
+                },
+                "status": {
+                  "$ref": "#/components/schemas/toolCallStatus"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "risks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "generatedAt": {
+            "$ref": "#/components/schemas/timestamp"
+          }
+        },
+        "additionalProperties": false
+      },
+      "toolName": {
+        "type": "string",
+        "enum": [
+          "list_files",
+          "search_text",
+          "search_symbol",
+          "read_file",
+          "read_ast",
+          "apply_patch",
+          "write_file",
+          "run_command",
+          "git_diff",
+          "git_status",
+          "index_repository",
+          "search_files",
+          "search_symbols",
+          "find_references",
+          "find_callers",
+          "find_callees",
+          "search_semantic"
+        ]
+      },
+      "toolCallStatus": {
+        "type": "string",
+        "enum": ["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"]
+      },
+      "runtimeMetrics": {
+        "type": "object",
+        "required": ["generatedAt", "tasks", "tools", "verifications", "modelUsage"],
+        "properties": {
+          "generatedAt": {
+            "$ref": "#/components/schemas/timestamp"
+          },
+          "tasks": {
+            "type": "object",
+            "required": [
+              "total",
+              "byStatus",
+              "successful",
+              "failed",
+              "successRate",
+              "averageDurationMs"
+            ],
+            "properties": {
+              "total": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "byStatus": {
+                "type": "object",
+                "required": [
+                  "CREATED",
+                  "PRECHECKING",
+                  "PLANNING",
+                  "EXECUTING",
+                  "VERIFYING",
+                  "READY_FOR_REVIEW",
+                  "APPLIED",
+                  "WAITING_USER",
+                  "PAUSED",
+                  "CANCELLED",
+                  "FAILED"
+                ],
+                "properties": {
+                  "CREATED": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "PRECHECKING": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "PLANNING": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "EXECUTING": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "VERIFYING": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "READY_FOR_REVIEW": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "APPLIED": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "WAITING_USER": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "PAUSED": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "CANCELLED": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "FAILED": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "additionalProperties": false
+              },
+              "successful": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "failed": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "successRate": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "averageDurationMs": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          },
+          "tools": {
+            "type": "object",
+            "required": ["total", "failed", "cancelled", "failureRate"],
+            "properties": {
+              "total": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "failed": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "cancelled": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "failureRate": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              }
+            },
+            "additionalProperties": false
+          },
+          "verifications": {
+            "type": "object",
+            "required": ["total", "failed", "errors"],
+            "properties": {
+              "total": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "failed": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "errors": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          },
+          "modelUsage": {
+            "type": "object",
+            "required": ["inputTokens", "outputTokens", "cost"],
+            "properties": {
+              "inputTokens": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "outputTokens": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "cost": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "errorResponse": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/appError"
+          }
+        },
+        "additionalProperties": false
+      },
+      "appError": {
+        "type": "object",
+        "required": ["code", "message"],
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/errorCode"
+          },
+          "message": {
+            "type": "string"
+          },
+          "details": true,
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "errorCode": {
+        "type": "string",
+        "enum": [
+          "VALIDATION_ERROR",
+          "NOT_FOUND",
+          "CONFLICT",
+          "FORBIDDEN",
+          "WORKSPACE_ERROR",
+          "COMMAND_NOT_ALLOWED",
+          "MODEL_ERROR",
+          "INDEX_ERROR",
+          "BUDGET_EXCEEDED",
+          "TASK_CANCELLED",
+          "INTERNAL_ERROR"
+        ]
+      },
+      "toolCall": {
+        "type": "object",
+        "required": ["name", "arguments"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "list_files",
+              "search_text",
+              "search_symbol",
+              "read_file",
+              "read_ast",
+              "apply_patch",
+              "write_file",
+              "run_command",
+              "git_diff",
+              "git_status",
+              "index_repository",
+              "search_files",
+              "search_symbols",
+              "find_references",
+              "find_callers",
+              "find_callees",
+              "search_semantic"
+            ]
+          },
+          "arguments": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "index_repository"
+                }
+              }
+            },
+            "then": {}
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "search_files"
+                }
+              }
+            },
+            "then": {}
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "search_symbols"
+                }
+              }
+            },
+            "then": {}
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "find_references"
+                }
+              }
+            },
+            "then": {}
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "find_callers"
+                }
+              }
+            },
+            "then": {}
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "find_callees"
+                }
+              }
+            },
+            "then": {}
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "search_semantic"
+                }
+              }
+            },
+            "then": {}
+          }
+        ],
+        "additionalProperties": false
+      },
+      "ToolCall": {
+        "type": "object",
+        "required": ["name", "arguments"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "list_files",
+              "search_text",
+              "search_symbol",
+              "read_file",
+              "read_ast",
+              "apply_patch",
+              "write_file",
+              "run_command",
+              "git_diff",
+              "git_status",
+              "index_repository",
+              "search_files",
+              "search_symbols",
+              "find_references",
+              "find_callers",
+              "find_callees",
+              "search_semantic"
+            ]
+          },
+          "arguments": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "index_repository"
+                }
+              }
+            },
+            "then": {}
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "search_files"
+                }
+              }
+            },
+            "then": {}
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "search_symbols"
+                }
+              }
+            },
+            "then": {}
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "find_references"
+                }
+              }
+            },
+            "then": {}
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "find_callers"
+                }
+              }
+            },
+            "then": {}
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "find_callees"
+                }
+              }
+            },
+            "then": {}
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "search_semantic"
+                }
+              }
+            },
+            "then": {}
+          }
+        ]
+      },
+      "indexQueryResult": {
+        "type": "object",
+        "required": ["path", "line", "entityType", "summary"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "entityType": {
+            "type": "string",
+            "minLength": 1
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "SemanticSearchResult": {
+        "type": "object",
+        "required": ["mode", "items"],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": ["vector", "lexical"]
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/indexQueryResult"
+            }
+          }
+        }
+      }
+    },
+    "responses": {
+      "Error": {
+        "description": "Structured error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/errorResponse"
+            }
+          }
+        }
+      }
+    }
+  }
+}

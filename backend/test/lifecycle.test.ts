@@ -1,0 +1,2119 @@
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { afterEach, describe, expect, it } from 'vitest';
+import { EventBroker } from '../src/broker.js';
+import { BudgetManager } from '../src/budget-manager.js';
+import { ContextManager } from '../src/context-manager.js';
+import { FakeCodeIndex } from '../src/adapters/fake-code-index.js';
+import { FakeModelGateway } from '../src/adapters/fake-model-gateway.js';
+import { AppDatabase, type TaskEventDraft } from '../src/db.js';
+import { AppError } from '../src/errors.js';
+import { HarnessRunner } from '../src/harness.js';
+import type { ToolExecutionContext, ToolRegistrationPort } from '../src/ports/tool-registry.js';
+import type { DecisionRequest, ModelGateway } from '../src/ports/model-gateway.js';
+import { TaskScheduler } from '../src/task-scheduler.js';
+import type { StoredTask, TaskPlan, ToolCall, ToolDefinition, ToolResult } from '../src/types.js';
+import { WorkspaceManager } from '../src/workspace.js';
+
+const cleanup: Array<() => Promise<void> | void> = [];
+
+afterEach(async () => {
+  for (const close of cleanup.splice(0).reverse()) await close();
+});
+
+class BlockingTools implements ToolRegistrationPort {
+  readonly calls: ToolCall[] = [];
+  readonly firstCallStarted: Promise<void>;
+  private resolveFirstCall!: () => void;
+  private blockNextList: boolean;
+
+  constructor(blockNextList = true) {
+    this.blockNextList = blockNextList;
+    this.firstCallStarted = new Promise((resolve) => {
+      this.resolveFirstCall = resolve;
+    });
+  }
+
+  register(): void {}
+
+  definitions(): ToolDefinition[] {
+    return [];
+  }
+
+  validate(call: ToolCall): void {
+    if (call.name === 'search_symbol') {
+      throw new AppError('VALIDATION_ERROR', 'Fixture tool is not registered');
+    }
+  }
+
+  async execute(call: ToolCall, context: ToolExecutionContext): Promise<ToolResult> {
+    this.calls.push(structuredClone(call));
+    const startedAt = Date.now();
+    if (call.name === 'list_files' && this.blockNextList) {
+      this.blockNextList = false;
+      this.resolveFirstCall();
+      await new Promise<void>((resolve) => {
+        if (context.signal?.aborted) resolve();
+        else context.signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+      return {
+        status: 'CANCELLED',
+        error: {
+          code: 'TASK_CANCELLED',
+          message: 'Fixture tool cancelled',
+          retryable: false
+        },
+        affectedFiles: [],
+        durationMs: Date.now() - startedAt
+      };
+    }
+    const output =
+      call.name === 'list_files'
+        ? ['README.md']
+        : call.name === 'run_command'
+          ? {
+              code:
+                Array.isArray(call.arguments.args) &&
+                (call.arguments.args.includes('--fail') ||
+                  call.arguments.args.includes('missing.js'))
+                  ? 1
+                  : 0,
+              stdout: 'v22.0.0\n',
+              stderr:
+                Array.isArray(call.arguments.args) &&
+                (call.arguments.args.includes('--fail') ||
+                  call.arguments.args.includes('missing.js'))
+                  ? 'fixture failure'
+                  : '',
+              stdoutBytes: 9,
+              stderrBytes: 0,
+              truncated: false
+            }
+          : { path: 'README.md', content: '# Fixture\n' };
+    return {
+      status: 'SUCCEEDED',
+      output,
+      affectedFiles: [],
+      durationMs: Date.now() - startedAt
+    };
+  }
+}
+
+class ReusingReadTools extends BlockingTools {
+  constructor() {
+    super(false);
+  }
+
+  override definitions(): ToolDefinition[] {
+    return [
+      {
+        name: 'read_file',
+        version: '1.0.0',
+        description: 'Read a file',
+        permission: 'READ',
+        sideEffect: false,
+        defaultTimeoutMs: 5_000,
+        inputSchema: { type: 'object' },
+        outputSchema: { type: 'object' }
+      }
+    ];
+  }
+}
+
+class PagedReadTools extends ReusingReadTools {
+  override async execute(call: ToolCall, context: ToolExecutionContext): Promise<ToolResult> {
+    if (call.name !== 'read_file') return super.execute(call, context);
+    this.calls.push(structuredClone(call));
+    const startLine = Number(call.arguments.startLine ?? 1);
+    const endLine = Math.min(350, startLine + 199);
+    return {
+      status: 'SUCCEEDED',
+      output: {
+        path: call.arguments.path,
+        content: `lines ${startLine}-${endLine}`,
+        lineCount: 350,
+        startLine,
+        endLine,
+        hasMore: endLine < 350,
+        numberedContent: `${startLine} | first line in range`,
+        hash: 'a'.repeat(64),
+        bytes: 3_500
+      },
+      affectedFiles: [],
+      durationMs: 0
+    };
+  }
+}
+
+class CommandExposingTools extends BlockingTools {
+  constructor() {
+    super(false);
+  }
+
+  override definitions(): ToolDefinition[] {
+    return [
+      {
+        name: 'run_command',
+        version: '1.0.0',
+        description: 'Run an allowlisted command',
+        permission: 'COMMAND',
+        sideEffect: true,
+        defaultTimeoutMs: 5_000,
+        inputSchema: { type: 'object' },
+        outputSchema: { type: 'object' }
+      }
+    ];
+  }
+}
+
+class WritingTools extends BlockingTools {
+  constructor() {
+    super(false);
+  }
+
+  override async execute(call: ToolCall, context: ToolExecutionContext): Promise<ToolResult> {
+    if (call.name !== 'write_file') return super.execute(call, context);
+    this.calls.push(structuredClone(call));
+    const filePath = path.join(context.workspacePath, String(call.arguments.path));
+    const content = String(call.arguments.content);
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(filePath, content);
+    return {
+      status: 'SUCCEEDED',
+      output: { path: call.arguments.path, bytes: Buffer.byteLength(content) },
+      affectedFiles: [String(call.arguments.path)],
+      durationMs: 0
+    };
+  }
+}
+
+class FailedWriteThenRecoveredTools extends BlockingTools {
+  private failedOnce = false;
+
+  override async execute(call: ToolCall, context: ToolExecutionContext): Promise<ToolResult> {
+    if (call.name !== 'write_file') return super.execute(call, context);
+    this.calls.push(structuredClone(call));
+    if (!this.failedOnce) {
+      this.failedOnce = true;
+      return {
+        status: 'FAILED',
+        error: {
+          code: 'CONFLICT',
+          message: 'Replacing an existing file requires expectedHash',
+          details: { category: 'CONFLICT' },
+          retryable: true
+        },
+        affectedFiles: [],
+        durationMs: 0
+      };
+    }
+    const filePath = path.join(context.workspacePath, String(call.arguments.path));
+    const content = String(call.arguments.content);
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(filePath, content);
+    return {
+      status: 'SUCCEEDED',
+      output: { path: call.arguments.path, bytes: Buffer.byteLength(content) },
+      affectedFiles: [String(call.arguments.path)],
+      durationMs: 0
+    };
+  }
+}
+
+class ReadingAndWritingTools extends WritingTools {
+  override definitions(): ToolDefinition[] {
+    return [
+      {
+        name: 'read_file',
+        version: '1.0.0',
+        description: 'Read a file',
+        permission: 'READ',
+        sideEffect: false,
+        defaultTimeoutMs: 5_000,
+        inputSchema: { type: 'object' },
+        outputSchema: { type: 'object' }
+      },
+      {
+        name: 'write_file',
+        version: '1.0.0',
+        description: 'Write a file',
+        permission: 'WRITE',
+        sideEffect: true,
+        defaultTimeoutMs: 5_000,
+        inputSchema: { type: 'object' },
+        outputSchema: { type: 'object' }
+      }
+    ];
+  }
+
+  override async execute(call: ToolCall, context: ToolExecutionContext): Promise<ToolResult> {
+    if (call.name !== 'read_file') return super.execute(call, context);
+    this.calls.push(structuredClone(call));
+    const filePath = path.join(context.workspacePath, String(call.arguments.path));
+    const content = await fs.readFile(filePath, 'utf8');
+    return {
+      status: 'SUCCEEDED',
+      output: {
+        path: call.arguments.path,
+        content,
+        lineCount: content.endsWith('\n')
+          ? content.split('\n').length - 1
+          : content.split('\n').length,
+        numberedContent: content
+          .split(/\r\n|\r|\n/)
+          .filter((line, index, lines) => !(index === lines.length - 1 && line === ''))
+          .map((line, index) => `${index + 1} | ${line}`)
+          .join('\n'),
+        hash: 'a'.repeat(64),
+        bytes: Buffer.byteLength(content)
+      },
+      affectedFiles: [],
+      durationMs: 0
+    };
+  }
+}
+
+class FailedPatchThenVerifiedTools extends BlockingTools {
+  override async execute(call: ToolCall, context: ToolExecutionContext): Promise<ToolResult> {
+    if (call.name === 'apply_patch') {
+      this.calls.push(structuredClone(call));
+      return {
+        status: 'FAILED',
+        error: {
+          code: 'CONFLICT',
+          message: 'Patch context did not match',
+          retryable: true
+        },
+        affectedFiles: [],
+        durationMs: 0
+      };
+    }
+    if (call.name === 'write_file') {
+      this.calls.push(structuredClone(call));
+      const filePath = path.join(context.workspacePath, String(call.arguments.path));
+      await fs.writeFile(filePath, String(call.arguments.content));
+      return {
+        status: 'SUCCEEDED',
+        output: { path: call.arguments.path },
+        affectedFiles: [String(call.arguments.path)],
+        durationMs: 0
+      };
+    }
+    return super.execute(call, context);
+  }
+}
+
+class InvalidPatchThenRecoveredTools extends BlockingTools {
+  override async execute(call: ToolCall, context: ToolExecutionContext): Promise<ToolResult> {
+    if (call.name === 'read_file') {
+      this.calls.push(structuredClone(call));
+      return {
+        status: 'SUCCEEDED',
+        output: { path: call.arguments.path, content: 'original\n', hash: 'a'.repeat(64) },
+        affectedFiles: [],
+        durationMs: 0
+      };
+    }
+    if (call.name === 'apply_patch') {
+      this.calls.push(structuredClone(call));
+      return {
+        status: 'FAILED',
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Patch edits overlap or address lines outside the current file',
+          details: { category: 'INVALID_PATCH_EDITS' },
+          retryable: false
+        },
+        affectedFiles: [],
+        durationMs: 0
+      };
+    }
+    if (call.name === 'write_file') {
+      this.calls.push(structuredClone(call));
+      const filePath = path.join(context.workspacePath, String(call.arguments.path));
+      await fs.writeFile(filePath, String(call.arguments.content));
+      return {
+        status: 'SUCCEEDED',
+        output: { path: call.arguments.path, hash: 'b'.repeat(64), bytes: 10 },
+        affectedFiles: [String(call.arguments.path)],
+        durationMs: 0
+      };
+    }
+    return super.execute(call, context);
+  }
+}
+
+interface Fixture {
+  database: AppDatabase;
+  harness: HarnessRunner;
+  scheduler: TaskScheduler;
+  task: StoredTask;
+  tools: BlockingTools;
+  source: string;
+}
+
+interface FixtureOptions {
+  modelGateway?: ModelGateway;
+  budgetManager?: BudgetManager;
+  blockFirstList?: boolean;
+  tools?: BlockingTools;
+  goal?: string;
+}
+
+function defaultBudgetManager(): BudgetManager {
+  return new BudgetManager({
+    maxSteps: 20,
+    maxToolCalls: 80,
+    maxDurationMs: 60_000,
+    maxChangedFiles: 100,
+    maxInputTokens: 120_000,
+    maxOutputTokens: 16_000,
+    maxCost: 10,
+    maxReadBytes: 256 * 1024,
+    maxVerificationRuns: 3
+  });
+}
+
+function meteredModelGateway(): ModelGateway {
+  const fake = new FakeModelGateway();
+  return {
+    decide: async (request, signal, onStreamEvent) => {
+      const response = await fake.decide(request, signal, onStreamEvent);
+      return {
+        ...response,
+        usage: { inputTokens: 7, outputTokens: 3, cost: 0.25 }
+      };
+    },
+    summarize: async (request, signal, onStreamEvent) => {
+      const response = await fake.summarize(request, signal, onStreamEvent);
+      return {
+        ...response,
+        usage: { inputTokens: 2, outputTokens: 1, cost: 0.05 }
+      };
+    },
+    embed: fake.embed.bind(fake)
+  };
+}
+
+async function fixture(options: FixtureOptions = {}): Promise<Fixture> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codeharness-lifecycle-'));
+  const source = path.join(root, 'source');
+  await fs.mkdir(source);
+  await fs.writeFile(path.join(source, 'README.md'), '# Fixture\n');
+  const database = new AppDatabase(path.join(root, 'test.sqlite'));
+  const workspaceManager = new WorkspaceManager({ root: path.join(root, 'workspaces') });
+  const projectId = randomUUID();
+  const imported = await workspaceManager.importProject(source, projectId);
+  database.createProject({
+    id: projectId,
+    name: 'fixture',
+    sourcePath: imported.sourcePath,
+    workspacePath: imported.projectPath,
+    sourceMetadata: imported.metadata,
+    createdAt: new Date().toISOString()
+  });
+  const sessionId = randomUUID();
+  database.createSession({
+    id: sessionId,
+    projectId,
+    title: 'Fixture',
+    createdAt: new Date().toISOString()
+  });
+  const tools = options.tools ?? new BlockingTools(options.blockFirstList ?? true);
+  const harness = new HarnessRunner({
+    database,
+    broker: new EventBroker(),
+    workspaceManager,
+    tools,
+    modelGateway: options.modelGateway ?? new FakeModelGateway(),
+    codeIndex: new FakeCodeIndex({
+      overview: {
+        projectId,
+        languages: ['Markdown'],
+        entryFiles: [],
+        testFiles: [],
+        buildCommands: [],
+        indexedFiles: 1,
+        degraded: true
+      }
+    }),
+    budgetManager: options.budgetManager ?? defaultBudgetManager(),
+    contextManager: new ContextManager({
+      maxEntries: 32,
+      maxTotalBytes: 64 * 1024,
+      maxEntryBytes: 16 * 1024
+    })
+  });
+  const scheduler = new TaskScheduler(database, harness, {
+    ownerId: randomUUID(),
+    leaseTtlMs: 2_000,
+    controlPollMs: 25
+  });
+  const task = await harness.createTask(projectId, sessionId, options.goal ?? 'Inspect fixture');
+  cleanup.push(async () => {
+    await scheduler.shutdown();
+    database.close();
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  });
+  return { database, harness, scheduler, task, tools, source };
+}
+
+function stateEvent(
+  from: StoredTask['status'],
+  to: StoredTask['status'],
+  timestamp: string
+): TaskEventDraft {
+  return {
+    type: 'task.state_changed',
+    timestamp,
+    payload: { from, to }
+  };
+}
+
+const plannedTask: TaskPlan = {
+  goal: 'Inspect fixture',
+  assumptions: [],
+  steps: [{ id: 'inspect', title: 'Inspect fixture', status: 'PENDING' }],
+  verification: ['node --version']
+};
+
+function changeDecisions(filePath = 'generated.txt') {
+  return [
+    { type: 'PLAN_UPDATE' as const, reason: 'Plan first', plan: plannedTask },
+    {
+      type: 'TOOL_CALL' as const,
+      reason: 'Create a reviewed file',
+      tool: {
+        name: 'write_file' as const,
+        arguments: { path: filePath, content: 'generated\n' }
+      }
+    },
+    { type: 'VERIFY' as const, reason: 'Verify', commands: ['node --version'] },
+    { type: 'COMPLETE' as const, reason: 'Done', summary: 'Generated a file' }
+  ];
+}
+
+describe('task lifecycle scheduler', () => {
+  it('starts a persisted created task during recovery', async () => {
+    const { database, harness, task } = await fixture({ blockFirstList: false });
+    const recoveringScheduler = new TaskScheduler(database, harness, {
+      ownerId: randomUUID()
+    });
+
+    expect(recoveringScheduler.recoverInterrupted()).toEqual([
+      expect.objectContaining({ id: task.id, status: 'CREATED' })
+    ]);
+    await recoveringScheduler.waitForIdle(task.id);
+    await recoveringScheduler.shutdown();
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+  });
+
+  it('stops at precheck when the isolated workspace already contains user changes', async () => {
+    const { database, scheduler, task, tools } = await fixture({ blockFirstList: false });
+    await fs.writeFile(path.join(task.workspacePath, 'README.md'), '# User change\n');
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)).toMatchObject({
+      status: 'WAITING_USER',
+      resumeStatus: 'PLANNING',
+      stopReason: 'Task workspace contains changes before execution'
+    });
+    expect(tools.calls).toEqual([]);
+  });
+
+  it('prevents duplicate runners, pauses cooperatively, and resumes from a checkpoint', async () => {
+    const { database, scheduler, task, tools } = await fixture();
+    expect(scheduler.start(task.id).status).toBe('CREATED');
+    expect(() => scheduler.start(task.id)).toThrow('active runner');
+    await tools.firstCallStarted;
+
+    const paused = await scheduler.pause(task.id);
+    expect(paused).toMatchObject({
+      status: 'PAUSED',
+      resumeStatus: 'EXECUTING',
+      controlRequest: undefined
+    });
+    expect(database.getTaskLease(task.id)).toBeUndefined();
+    expect(database.getToolCalls(task.id)).toEqual([
+      expect.objectContaining({
+        status: 'CANCELLED',
+        result: expect.objectContaining({ status: 'CANCELLED' })
+      })
+    ]);
+
+    expect(scheduler.resume(task.id)).toMatchObject({
+      status: 'EXECUTING',
+      resumeStatus: undefined
+    });
+    await scheduler.waitForIdle(task.id);
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(database.getTaskLease(task.id)).toBeUndefined();
+    expect(database.getEvents(task.id).map(({ type }) => type)).toEqual(
+      expect.arrayContaining(['task.paused', 'task.resumed', 'task.completed'])
+    );
+    expect((await scheduler.apply(task.id)).status).toBe('APPLIED');
+    expect(database.getEvents(task.id).at(-1)?.type).toBe('task.applied');
+  });
+
+  it('cancels the active tool and preserves completion and audit records', async () => {
+    const { database, scheduler, task, tools } = await fixture();
+    scheduler.start(task.id);
+    await tools.firstCallStarted;
+
+    const cancelled = await scheduler.cancel(task.id);
+    expect(cancelled).toMatchObject({
+      status: 'CANCELLED',
+      stopReason: 'Cancelled by user',
+      controlRequest: undefined
+    });
+    const [toolCall] = database.getToolCalls(task.id);
+    expect(toolCall).toMatchObject({ status: 'CANCELLED' });
+    expect(database.getAuditRecords('tool_call', toolCall!.id).map(({ action }) => action)).toEqual(
+      ['tool.started', 'tool.completed']
+    );
+    expect(database.getTaskLease(task.id)).toBeUndefined();
+  });
+
+  it('does not replay an interrupted tool with an uncertain outcome', async () => {
+    const { database, scheduler, task, tools } = await fixture();
+    scheduler.start(task.id);
+    await tools.firstCallStarted;
+    await scheduler.pause(task.id);
+
+    const [interrupted] = database.getToolCalls(task.id);
+    database.connection
+      .prepare(
+        "UPDATE tool_calls SET status = 'RUNNING', finished_at = NULL, result_json = NULL WHERE id = ?"
+      )
+      .run(interrupted!.id);
+
+    scheduler.resume(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(tools.calls.filter(({ name }) => name === 'list_files')).toHaveLength(1);
+    expect(database.getToolCall(interrupted!.id)).toMatchObject({
+      status: 'CANCELLED',
+      result: {
+        error: {
+          message: 'Interrupted tool outcome is unknown; the call was not replayed',
+          retryable: false
+        }
+      }
+    });
+  });
+
+  it('recovers a lease that expires after startup into a resumable pause', async () => {
+    const { database, harness, task } = await fixture();
+    const plan: TaskPlan = {
+      goal: task.goal,
+      assumptions: [],
+      steps: [{ id: 'inspect', title: 'Inspect', status: 'PENDING' }],
+      verification: ['node --version']
+    };
+    let current = task;
+    for (const [status, patch] of [
+      ['PRECHECKING', {}],
+      ['PLANNING', { plan }],
+      ['EXECUTING', {}]
+    ] as const) {
+      const next = status as StoredTask['status'];
+      const timestamp = new Date().toISOString();
+      current = database.transitionTask({
+        taskId: task.id,
+        expectedVersion: current.version,
+        patch: { status: next, ...patch },
+        events: [stateEvent(current.status, next, timestamp)],
+        audit: { id: randomUUID(), action: 'fixture.transition', timestamp }
+      }).task;
+    }
+    const acquiredAt = new Date();
+    const expiresAt = new Date(acquiredAt.getTime() + 100);
+    database.acquireTaskLease(
+      task.id,
+      randomUUID(),
+      acquiredAt.toISOString(),
+      expiresAt.toISOString()
+    );
+    const recoveringScheduler = new TaskScheduler(database, harness, {
+      ownerId: randomUUID(),
+      leaseTtlMs: 100,
+      controlPollMs: 20
+    });
+    expect(recoveringScheduler.recoverInterrupted()).toEqual([]);
+    recoveringScheduler.startRecoveryMonitor();
+    const deadline = Date.now() + 1_000;
+    while (database.getTask(task.id)?.status !== 'PAUSED' && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    await recoveringScheduler.shutdown();
+
+    expect(database.getTask(task.id)).toMatchObject({
+      id: task.id,
+      status: 'PAUSED',
+      resumeStatus: 'EXECUTING'
+    });
+    expect(database.getTaskLease(task.id)).toBeUndefined();
+    expect(database.getEvents(task.id).at(-1)).toMatchObject({
+      type: 'task.paused',
+      payload: { status: 'PAUSED' }
+    });
+  });
+
+  it('degrades a model planning failure into an inspectable waiting state', async () => {
+    const { database, scheduler, task, tools } = await fixture({
+      modelGateway: new FakeModelGateway([])
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)).toMatchObject({
+      status: 'WAITING_USER',
+      resumeStatus: 'PLANNING',
+      stopReason: 'FakeModelGateway has no queued decision'
+    });
+    expect(database.getEvents(task.id).at(-1)).toMatchObject({
+      type: 'task.waiting_user',
+      payload: { message: 'FakeModelGateway has no queued decision' }
+    });
+    expect(database.getTaskLease(task.id)).toBeUndefined();
+    expect(tools.calls).toEqual([]);
+  });
+
+  it('summarizes older history in persisted batches and reloads bounded context', async () => {
+    const { database, scheduler, task } = await fixture({
+      blockFirstList: false,
+      modelGateway: meteredModelGateway()
+    });
+    for (let index = 0; index < 14; index += 1) {
+      database.createMessage({
+        id: randomUUID(),
+        sessionId: task.sessionId,
+        role: index % 2 === 0 ? 'USER' : 'ASSISTANT',
+        content: `Unique session message ${index}`,
+        createdAt: new Date(Date.now() + index).toISOString()
+      });
+    }
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    const checkpoint = database.getTaskRun(task.id);
+    expect(checkpoint).toMatchObject({
+      summarizedMessageCount: 6,
+      state: {
+        phase: 'READY_FOR_REVIEW',
+        budget: {
+          usedSteps: 6,
+          usedToolCalls: 4,
+          usedInputTokens: 48,
+          usedOutputTokens: 21,
+          usedCost: 1.65,
+          usedVerificationRuns: 1
+        }
+      }
+    });
+    expect(checkpoint?.historySummary).toContain(task.goal);
+    expect(checkpoint?.state.contextRefs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: 'model-summary', contentHash: expect.any(String) }),
+        expect.objectContaining({
+          source: 'session-message:assistant',
+          contentHash: expect.any(String)
+        })
+      ])
+    );
+  });
+
+  it('continues with recent history when optional summarization fails', async () => {
+    const modelGateway = meteredModelGateway();
+    modelGateway.summarize = async () => {
+      throw new AppError('MODEL_ERROR', 'Model summarize failed', { category: 'PROVIDER' }, 502);
+    };
+    const { database, scheduler, task } = await fixture({
+      blockFirstList: false,
+      modelGateway
+    });
+    for (let index = 0; index < 14; index += 1) {
+      database.createMessage({
+        id: randomUUID(),
+        sessionId: task.sessionId,
+        role: index % 2 === 0 ? 'USER' : 'ASSISTANT',
+        content: `Unique session message ${index}`,
+        createdAt: new Date(Date.now() + index).toISOString()
+      });
+    }
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(database.getTaskRun(task.id)?.historySummary).toBeUndefined();
+    expect(database.getTaskRun(task.id)?.summarizedMessageCount).toBeGreaterThan(0);
+  });
+
+  it('pauses before exceeding a persisted tool-call budget', async () => {
+    const budgetManager = new BudgetManager({
+      maxSteps: 20,
+      maxToolCalls: 1,
+      maxDurationMs: 60_000,
+      maxChangedFiles: 100,
+      maxInputTokens: 120_000,
+      maxOutputTokens: 16_000,
+      maxCost: 10,
+      maxReadBytes: 256 * 1024,
+      maxVerificationRuns: 3
+    });
+    const { database, scheduler, task, tools } = await fixture({
+      budgetManager,
+      blockFirstList: false
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)).toMatchObject({
+      status: 'PAUSED',
+      resumeStatus: 'EXECUTING',
+      stopReason: 'Task budget exceeded: MAX_TOOL_CALLS'
+    });
+    expect(database.getTaskRun(task.id)).toMatchObject({
+      state: {
+        phase: 'PAUSED',
+        budget: { usedToolCalls: 1, maxToolCalls: 1 }
+      }
+    });
+    expect(tools.calls).toHaveLength(1);
+    expect(database.getEvents(task.id).at(-1)).toMatchObject({
+      type: 'task.paused',
+      payload: { status: 'PAUSED' }
+    });
+    expect(database.getTaskLease(task.id)).toBeUndefined();
+  });
+
+  it('persists every decision and observation across a multi-turn run', async () => {
+    const { database, scheduler, task } = await fixture({ blockFirstList: false });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    const run = database.getTaskRun(task.id);
+    expect(run?.state).toMatchObject({
+      phase: 'READY_FOR_REVIEW',
+      turnCount: 5,
+      consecutiveFailures: 0,
+      activeTurn: {
+        sequence: 5,
+        status: 'OBSERVED',
+        decision: { type: 'COMPLETE' },
+        observation: { status: 'SUCCEEDED' }
+      }
+    });
+    for (let sequence = 1; sequence <= 5; sequence += 1) {
+      expect(
+        database
+          .getAuditRecords('harness_turn', `${run!.runId}:${sequence}`)
+          .map(({ action }) => action)
+      ).toEqual(['harness.decision', 'harness.observation']);
+    }
+    expect(
+      database
+        .getEvents(task.id)
+        .filter(({ type }) => type === 'harness.decision')
+        .map(({ payload }) => payload.sequence)
+    ).toEqual([1, 2, 3, 4, 5]);
+    expect(
+      database.getToolCalls(task.id).filter(({ stepId }) => stepId === 'inspect')
+    ).toHaveLength(4);
+  });
+
+  it('waits for an ASK_USER decision and resumes the persisted loop', async () => {
+    const modelGateway = new FakeModelGateway([
+      { type: 'PLAN_UPDATE', reason: 'Plan first', plan: plannedTask },
+      { type: 'ASK_USER', reason: 'Need confirmation', question: 'Continue inspection?' },
+      {
+        type: 'TOOL_CALL',
+        reason: 'Inspect files',
+        tool: { name: 'list_files', arguments: { path: '.' } }
+      },
+      {
+        type: 'TOOL_CALL',
+        reason: 'Read overview',
+        tool: { name: 'read_file', arguments: { path: 'README.md' } }
+      },
+      {
+        type: 'TOOL_CALL',
+        reason: 'Check status',
+        tool: { name: 'git_status', arguments: {} }
+      },
+      { type: 'VERIFY', reason: 'Verify', commands: ['node --version'] },
+      { type: 'COMPLETE', reason: 'Done', summary: 'Inspection complete' }
+    ]);
+    const { database, scheduler, task } = await fixture({
+      blockFirstList: false,
+      modelGateway
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+    expect(database.getTask(task.id)).toMatchObject({
+      status: 'WAITING_USER',
+      resumeStatus: 'EXECUTING',
+      stopReason: 'Continue inspection?'
+    });
+
+    const checkpoint = database.getTaskRun(task.id)!;
+    database.updateTaskRun(
+      {
+        ...checkpoint,
+        startedAt: new Date(Date.now() - 2_000_000).toISOString(),
+        updatedAt: new Date().toISOString()
+      },
+      checkpoint.version
+    );
+    scheduler.resume(task.id);
+    await scheduler.waitForIdle(task.id);
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(database.getEvents(task.id).map(({ type }) => type)).toEqual(
+      expect.arrayContaining(['task.waiting_user', 'task.resumed', 'task.completed'])
+    );
+  });
+
+  it('records rejected tools and stops after bounded consecutive failures', async () => {
+    const rejected = {
+      type: 'TOOL_CALL' as const,
+      reason: 'Try unavailable tool',
+      tool: { name: 'search_symbol' as const, arguments: { query: 'fixture' } }
+    };
+    const { database, scheduler, task } = await fixture({
+      blockFirstList: false,
+      modelGateway: new FakeModelGateway([
+        { type: 'PLAN_UPDATE', reason: 'Plan first', plan: plannedTask },
+        rejected,
+        rejected,
+        rejected
+      ])
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)).toMatchObject({
+      status: 'WAITING_USER',
+      resumeStatus: 'EXECUTING',
+      stopReason: 'Harness stopped after 3 consecutive failures'
+    });
+    expect(database.getToolCalls(task.id)).toHaveLength(3);
+    expect(database.getToolCalls(task.id).every(({ status }) => status === 'FAILED')).toBe(true);
+    expect(database.getTaskRun(task.id)?.state).toMatchObject({
+      turnCount: 3,
+      consecutiveFailures: 3,
+      activeTurn: {
+        status: 'OBSERVED',
+        observation: {
+          status: 'FAILED',
+          error: { code: 'VALIDATION_ERROR', retryable: false }
+        }
+      }
+    });
+  });
+
+  it('stops a repeated successful tool decision instead of looping', async () => {
+    const repeated = {
+      type: 'TOOL_CALL' as const,
+      reason: 'Read the same file again',
+      tool: { name: 'list_files' as const, arguments: { path: '.' } }
+    };
+    const { database, scheduler, task } = await fixture({
+      blockFirstList: false,
+      modelGateway: new FakeModelGateway([
+        { type: 'PLAN_UPDATE', reason: 'Inspect files', plan: plannedTask },
+        repeated,
+        repeated,
+        repeated,
+        repeated,
+        repeated,
+        repeated
+      ])
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)).toMatchObject({
+      status: 'WAITING_USER',
+      stopReason: 'Model repeated the same successful tool call without making progress'
+    });
+    expect(
+      database.getToolCalls(task.id).filter(({ tool }) => tool.name === 'list_files')
+    ).toHaveLength(1);
+  });
+
+  it('stops a repeated read after a reused result instead of exhausting read budget', async () => {
+    const read = {
+      type: 'TOOL_CALL' as const,
+      reason: 'Read the parser again',
+      tool: { name: 'read_file' as const, arguments: { path: 'README.md' } }
+    };
+    const patch = {
+      type: 'TOOL_CALL' as const,
+      reason: 'Apply the parser fix',
+      tool: { name: 'apply_patch' as const, arguments: { path: 'README.md' } }
+    };
+    const { database, scheduler, task } = await fixture({
+      blockFirstList: false,
+      tools: new ReusingReadTools(),
+      modelGateway: new FakeModelGateway([
+        { type: 'PLAN_UPDATE', reason: 'Inspect files', plan: plannedTask },
+        read,
+        patch,
+        read,
+        read,
+        read,
+        read,
+        { type: 'VERIFY', reason: 'Verify the workspace diff', commands: ['node --version'] },
+        { type: 'COMPLETE', reason: 'Done', summary: 'Inspection complete' }
+      ])
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(
+      database.getToolCalls(task.id).filter(({ tool }) => tool.name === 'read_file')
+    ).toHaveLength(1);
+    expect(database.getToolCalls(task.id).some(({ tool }) => tool.name === 'git_diff')).toBe(true);
+  });
+
+  it('corrects one repeated read and continues without user intervention', async () => {
+    const read = {
+      type: 'TOOL_CALL' as const,
+      reason: 'Read the parser',
+      tool: { name: 'read_file' as const, arguments: { path: 'README.md' } }
+    };
+    const { database, scheduler, task } = await fixture({
+      blockFirstList: false,
+      tools: new ReusingReadTools(),
+      modelGateway: new FakeModelGateway([
+        { type: 'PLAN_UPDATE', reason: 'Inspect files', plan: plannedTask },
+        read,
+        read,
+        {
+          type: 'VERIFY',
+          reason: 'Use the existing read and verify',
+          commands: ['node --version']
+        },
+        { type: 'COMPLETE', reason: 'Done', summary: 'Inspection complete' }
+      ])
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(
+      database.getToolCalls(task.id).filter(({ tool }) => tool.name === 'read_file')
+    ).toHaveLength(1);
+    const runState = database.getTaskRun(task.id)?.state;
+    expect(runState?.budget.usedReadBytes).toBeLessThan(1_000);
+    expect(runState?.budget.usedSteps).toBe((runState?.turnCount ?? 0) + 1);
+  });
+
+  it('keeps read_file available when correcting only one repeated argument set', async () => {
+    const requests: DecisionRequest[] = [];
+    const firstRead = {
+      type: 'TOOL_CALL' as const,
+      reason: 'Read the first file',
+      tool: { name: 'read_file' as const, arguments: { path: 'README.md' } }
+    };
+    const { database, scheduler, task } = await fixture({
+      blockFirstList: false,
+      tools: new ReusingReadTools(),
+      modelGateway: new FakeModelGateway((request, index) => {
+        requests.push(request);
+        return [
+          { type: 'PLAN_UPDATE' as const, reason: 'Inspect files', plan: plannedTask },
+          firstRead,
+          firstRead,
+          {
+            type: 'TOOL_CALL' as const,
+            reason: 'Read a different project file',
+            tool: { name: 'read_file' as const, arguments: { path: 'package.json' } }
+          },
+          {
+            type: 'VERIFY' as const,
+            reason: 'Verify after both reads',
+            commands: ['node --version']
+          },
+          { type: 'COMPLETE' as const, reason: 'Done', summary: 'Inspection complete' }
+        ][index]!;
+      })
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    const correctionRequest = requests.find(({ harnessInstruction }) =>
+      harnessInstruction?.includes('exactly repeats a successful read')
+    );
+    expect(correctionRequest?.availableTools.some(({ name }) => name === 'read_file')).toBe(true);
+    expect(
+      database
+        .getToolCalls(task.id)
+        .filter(({ tool }) => tool.name === 'read_file')
+        .map(({ tool }) => tool.arguments)
+    ).toEqual([{ path: 'README.md' }, { path: 'package.json' }]);
+  });
+
+  it('continues a paged file read when the model repeats the original request', async () => {
+    const read = {
+      type: 'TOOL_CALL' as const,
+      reason: 'Read the project file',
+      tool: { name: 'read_file' as const, arguments: { path: 'README.md' } }
+    };
+    const tools = new PagedReadTools();
+    const { database, scheduler, task } = await fixture({
+      blockFirstList: false,
+      tools,
+      modelGateway: new FakeModelGateway([
+        { type: 'PLAN_UPDATE', reason: 'Inspect files', plan: plannedTask },
+        read,
+        read,
+        {
+          type: 'VERIFY',
+          reason: 'Verify after reading both ranges',
+          commands: ['node --version']
+        },
+        { type: 'COMPLETE', reason: 'Done', summary: 'Inspection complete' }
+      ])
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(tools.calls.filter(({ name }) => name === 'read_file')).toEqual([
+      { name: 'read_file', arguments: { path: 'README.md' } },
+      { name: 'read_file', arguments: { path: 'README.md', startLine: 201 } }
+    ]);
+    expect(
+      database
+        .getEvents(task.id)
+        .filter(({ type }) => type === 'harness.decision')
+        .map(({ payload }) => payload.reason)
+    ).toContain('Harness continuation: read the next unread section of the requested file');
+  });
+
+  it('bounds repeated git diff fallbacks and asks the model to advance the workflow', async () => {
+    const read = {
+      type: 'TOOL_CALL' as const,
+      reason: 'Read the same project file',
+      tool: { name: 'read_file' as const, arguments: { path: 'README.md' } }
+    };
+    const { database, scheduler, task, tools } = await fixture({
+      blockFirstList: false,
+      tools: new ReusingReadTools(),
+      modelGateway: new FakeModelGateway([
+        { type: 'PLAN_UPDATE', reason: 'Inspect files', plan: plannedTask },
+        read,
+        read,
+        read,
+        read,
+        read,
+        {
+          type: 'VERIFY',
+          reason: 'Verify after the harness stopped reusing the same inspection',
+          commands: ['node --version']
+        },
+        { type: 'COMPLETE', reason: 'Done', summary: 'Inspection complete' }
+      ])
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(tools.calls.filter(({ name }) => name === 'read_file')).toHaveLength(1);
+    expect(tools.calls.filter(({ name }) => name === 'git_diff')).toHaveLength(1);
+    expect(database.getVerificationResults(task.id)).toMatchObject([
+      { command: 'node --version', status: 'PASSED' }
+    ]);
+  });
+
+  it('allows a read from a previous run to rebuild context after resume', async () => {
+    const read = {
+      type: 'TOOL_CALL' as const,
+      reason: 'Read the parser',
+      tool: { name: 'read_file' as const, arguments: { path: 'README.md' } }
+    };
+    const { database, scheduler, task, tools } = await fixture({
+      blockFirstList: false,
+      tools: new ReusingReadTools(),
+      modelGateway: new FakeModelGateway([
+        { type: 'PLAN_UPDATE', reason: 'Inspect files', plan: plannedTask },
+        read,
+        { type: 'ASK_USER', reason: 'Pause for confirmation', question: 'Continue?' },
+        read,
+        { type: 'VERIFY', reason: 'Verify the resumed run', commands: ['node --version'] },
+        { type: 'COMPLETE', reason: 'Done', summary: 'Inspection complete' }
+      ])
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+    expect(database.getTask(task.id)).toMatchObject({
+      status: 'WAITING_USER',
+      resumeStatus: 'EXECUTING'
+    });
+
+    scheduler.resume(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(tools.calls.filter(({ name }) => name === 'read_file')).toHaveLength(2);
+    expect(database.getTask(task.id)?.stopReason).toBeUndefined();
+  });
+
+  it('invalidates a reusable read after a successful workspace write', async () => {
+    const tools = new ReadingAndWritingTools();
+    const read = {
+      type: 'TOOL_CALL' as const,
+      reason: 'Read the current file',
+      tool: { name: 'read_file' as const, arguments: { path: 'README.md' } }
+    };
+    const { database, scheduler, task } = await fixture({
+      goal: 'Update README.md',
+      blockFirstList: false,
+      tools,
+      modelGateway: new FakeModelGateway([
+        { type: 'PLAN_UPDATE', reason: 'Plan the update', plan: plannedTask },
+        read,
+        {
+          type: 'TOOL_CALL',
+          reason: 'Update the file',
+          tool: {
+            name: 'write_file',
+            arguments: { path: 'README.md', content: '# Updated\n' }
+          }
+        },
+        read,
+        { type: 'VERIFY', reason: 'Verify', commands: ['node --version'] },
+        { type: 'COMPLETE', reason: 'Done', summary: 'README updated' }
+      ])
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(tools.calls.filter(({ name }) => name === 'read_file')).toHaveLength(2);
+    const readResults = database
+      .getToolCalls(task.id)
+      .filter(({ tool }) => tool.name === 'read_file')
+      .map(({ result }) => result?.output);
+    expect(readResults).toEqual([
+      expect.objectContaining({ content: '# Fixture\n' }),
+      expect.objectContaining({ content: '# Updated\n' })
+    ]);
+  });
+
+  it('lets repeated patch decisions reach the patch conflict check', async () => {
+    const repeatedPatch = {
+      type: 'TOOL_CALL' as const,
+      reason: 'Apply the same patch again',
+      tool: {
+        name: 'apply_patch' as const,
+        arguments: {
+          path: 'README.md',
+          expectedHash: 'fixture-hash',
+          edits: [{ startLine: 1, deleteCount: 0, lines: ['# Changed'] }]
+        }
+      }
+    };
+    const premature = { type: 'COMPLETE' as const, reason: 'Finish', summary: 'Done' };
+    const { database, scheduler, task } = await fixture({
+      blockFirstList: false,
+      modelGateway: new FakeModelGateway([
+        { type: 'PLAN_UPDATE', reason: 'Plan first', plan: plannedTask },
+        repeatedPatch,
+        repeatedPatch,
+        premature,
+        premature,
+        premature
+      ])
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)).toMatchObject({
+      status: 'WAITING_USER',
+      stopReason: 'Harness stopped after 3 consecutive failures'
+    });
+    expect(
+      database.getToolCalls(task.id).filter(({ tool }) => tool.name === 'apply_patch')
+    ).toHaveLength(2);
+  });
+
+  it('falls back to a safe verification command after repeated invalid commands', async () => {
+    const { database, scheduler, task, tools } = await fixture({
+      blockFirstList: false,
+      modelGateway: new FakeModelGateway([
+        { type: 'PLAN_UPDATE', reason: 'Plan first', plan: plannedTask },
+        { type: 'VERIFY', reason: 'Read the changed file', commands: ['cat tests/conftest.py'] },
+        { type: 'VERIFY', reason: 'Read the changed file', commands: ['cat tests/conftest.py'] },
+        { type: 'COMPLETE', reason: 'Fallback verification passed', summary: 'Done' }
+      ])
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(database.getVerificationResults(task.id)).toEqual([
+      expect.objectContaining({ command: 'node --version', status: 'PASSED' })
+    ]);
+    expect(tools.calls.filter(({ name }) => name === 'run_command')).toHaveLength(1);
+  });
+
+  it('retries a rejected verification command with policy feedback', async () => {
+    const completedPlan: TaskPlan = {
+      ...plannedTask,
+      steps: [{ id: 'inspect', title: 'Inspect fixture', status: 'DONE' }]
+    };
+    const { database, scheduler, task } = await fixture({
+      blockFirstList: false,
+      modelGateway: new FakeModelGateway([
+        { type: 'PLAN_UPDATE', reason: 'Plan first', plan: completedPlan },
+        { type: 'VERIFY', reason: 'Read a file', commands: ['cat tests/conftest.py'] },
+        { type: 'VERIFY', reason: 'Run the test suite', commands: ['python -m pytest -v'] },
+        { type: 'COMPLETE', reason: 'Verification passed', summary: 'Done' }
+      ])
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)).toMatchObject({ status: 'READY_FOR_REVIEW' });
+    expect(database.getVerificationResults(task.id)).toHaveLength(1);
+  });
+
+  it('resets the failure window when a user resumes a bounded failure pause', async () => {
+    const rejected = {
+      type: 'TOOL_CALL' as const,
+      reason: 'Try unavailable tool',
+      tool: { name: 'search_symbol' as const, arguments: { query: 'fixture' } }
+    };
+    const { database, harness, scheduler, task } = await fixture({
+      blockFirstList: false,
+      modelGateway: new FakeModelGateway([
+        { type: 'PLAN_UPDATE', reason: 'Plan first', plan: plannedTask },
+        rejected,
+        rejected,
+        rejected
+      ])
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+    expect(database.getTaskRun(task.id)?.state.consecutiveFailures).toBe(3);
+
+    const checkpoint = database.getTaskRun(task.id)!;
+    database.updateTaskRun(
+      {
+        ...checkpoint,
+        state: {
+          ...checkpoint.state,
+          budget: { ...checkpoint.state.budget, usedVerificationRuns: 3 }
+        },
+        updatedAt: new Date().toISOString()
+      },
+      checkpoint.version
+    );
+
+    expect(harness.resume(task.id)).toMatchObject({ status: 'EXECUTING' });
+    expect(database.getTaskRun(task.id)?.state.consecutiveFailures).toBe(0);
+    expect(database.getTaskRun(task.id)?.state.budget).toMatchObject({
+      usedSteps: 0,
+      usedToolCalls: 0,
+      usedInputTokens: 0,
+      usedOutputTokens: 0,
+      usedCost: 0,
+      usedReadBytes: 0,
+      usedVerificationRuns: 0
+    });
+  });
+
+  it('rejects model completion until the plan has passed verification', async () => {
+    const premature = {
+      type: 'COMPLETE' as const,
+      reason: 'Claim completion early',
+      summary: 'Done'
+    };
+    const { database, scheduler, task } = await fixture({
+      blockFirstList: false,
+      modelGateway: new FakeModelGateway([
+        { type: 'PLAN_UPDATE', reason: 'Plan first', plan: plannedTask },
+        premature,
+        premature,
+        premature
+      ])
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('WAITING_USER');
+    expect(database.getVerificationResults(task.id)).toEqual([]);
+    expect(database.getEvents(task.id).map(({ type }) => type)).not.toContain('task.completed');
+  });
+
+  it('completes a read-only task after its plan is done without a shell verification', async () => {
+    const { database, scheduler, task } = await fixture({
+      blockFirstList: false,
+      modelGateway: new FakeModelGateway([
+        {
+          type: 'PLAN_UPDATE',
+          reason: 'Plan the repository report',
+          plan: {
+            ...plannedTask,
+            steps: [{ id: 'report', title: 'Prepare the report', status: 'DONE' }],
+            verification: ['Check the collected repository context']
+          }
+        },
+        { type: 'COMPLETE', reason: 'Report is ready', summary: 'Repository report complete' }
+      ])
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(database.getMessages(task.sessionId).at(-1)).toMatchObject({
+      role: 'ASSISTANT',
+      content: 'Repository report complete'
+    });
+    expect(database.getEvents(task.id).at(-1)).toMatchObject({
+      type: 'task.completed',
+      payload: {
+        verification: { command: 'read-only task: no verification command', code: 0 }
+      }
+    });
+  });
+
+  it('rejects a change task completion when no workspace changes were produced', async () => {
+    const premature = {
+      type: 'COMPLETE' as const,
+      reason: 'Claim completion without changing the file',
+      summary: 'The refactor is complete'
+    };
+    const { database, scheduler, task } = await fixture({
+      goal: 'Refactor text_parser.py',
+      blockFirstList: false,
+      modelGateway: new FakeModelGateway([
+        {
+          type: 'PLAN_UPDATE',
+          reason: 'Plan the refactor',
+          plan: {
+            ...plannedTask,
+            steps: [{ id: 'refactor', title: 'Refactor the parser', status: 'DONE' }]
+          }
+        },
+        premature,
+        premature,
+        premature
+      ])
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('WAITING_USER');
+    expect(database.getEvents(task.id).map(({ type }) => type)).not.toContain('task.completed');
+    expect(database.getFileChanges(task.id)).toEqual([]);
+  });
+
+  it('completes a changed task after a failed patch when a later command verifies the real diff', async () => {
+    const tools = new FailedPatchThenVerifiedTools(false);
+    const { database, scheduler, task } = await fixture({
+      goal: '在test_qa.py最前面加注释，解释文件的作用',
+      blockFirstList: false,
+      tools,
+      modelGateway: new FakeModelGateway([
+        {
+          type: 'PLAN_UPDATE',
+          reason: 'Plan the comment update',
+          plan: {
+            ...plannedTask,
+            steps: [{ id: 'comment', title: 'Add the file comment', status: 'PENDING' }]
+          }
+        },
+        {
+          type: 'TOOL_CALL',
+          reason: 'Inspect the target file',
+          tool: { name: 'read_file', arguments: { path: 'test_qa.py' } }
+        },
+        {
+          type: 'TOOL_CALL',
+          reason: 'Apply the requested comment',
+          tool: { name: 'apply_patch', arguments: { path: 'test_qa.py' } }
+        },
+        {
+          type: 'TOOL_CALL',
+          reason: 'Write the corrected file after the patch conflict',
+          tool: { name: 'write_file', arguments: { path: 'test_qa.py', content: '# comment\n' } }
+        },
+        {
+          type: 'PLAN_UPDATE',
+          reason: 'The requested file change is now applied; mark the edit step complete',
+          plan: {
+            ...plannedTask,
+            steps: [{ id: 'comment', title: 'Add the file comment', status: 'DONE' }]
+          }
+        },
+        {
+          type: 'VERIFY',
+          reason: 'Verify the changed workspace',
+          commands: ['git diff --check']
+        },
+        { type: 'COMPLETE', reason: 'The change is verified', summary: 'Comment added' }
+      ])
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(database.getVerificationResults(task.id)).toMatchObject([
+      { command: 'git diff --check', status: 'PASSED', exitCode: 0 }
+    ]);
+    expect(database.getFileChanges(task.id)).toEqual([
+      expect.objectContaining({ path: 'test_qa.py', decision: 'PENDING' })
+    ]);
+    expect(tools.calls.map(({ name }) => name)).toEqual([
+      'read_file',
+      'apply_patch',
+      'write_file',
+      'run_command'
+    ]);
+  });
+
+  it('normalizes model command tool calls into tracked verification', async () => {
+    const requests: DecisionRequest[] = [];
+    const decisions = [
+      { type: 'PLAN_UPDATE' as const, reason: 'Plan first', plan: plannedTask },
+      {
+        type: 'TOOL_CALL' as const,
+        reason: 'Run an informational command',
+        tool: {
+          name: 'run_command' as const,
+          arguments: { executable: 'node', args: ['--version'] }
+        }
+      },
+      { type: 'COMPLETE' as const, reason: 'Complete after verification', summary: 'Done' }
+    ];
+    const { database, scheduler, task } = await fixture({
+      blockFirstList: false,
+      tools: new CommandExposingTools(),
+      modelGateway: new FakeModelGateway((request, index) => {
+        requests.push(request);
+        return decisions[index]!;
+      })
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(database.getVerificationResults(task.id)).toEqual([
+      expect.objectContaining({ command: 'node --version', status: 'PASSED' })
+    ]);
+    expect(
+      requests.every(({ availableTools }) =>
+        availableTools.every(({ name }) => name !== 'run_command')
+      )
+    ).toBe(true);
+  });
+
+  it('stops repeating an identical write after a write conflict and recovers with new content', async () => {
+    const requests: DecisionRequest[] = [];
+    const decisions = [
+      { type: 'PLAN_UPDATE' as const, reason: 'Plan first', plan: plannedTask },
+      {
+        type: 'TOOL_CALL' as const,
+        reason: 'Create the project file',
+        tool: { name: 'write_file' as const, arguments: { path: 'package.json', content: '{}' } }
+      },
+      {
+        type: 'TOOL_CALL' as const,
+        reason: 'Retry the project file write',
+        tool: { name: 'write_file' as const, arguments: { path: 'package.json', content: '{}' } }
+      },
+      {
+        type: 'TOOL_CALL' as const,
+        reason: 'Write the corrected project file',
+        tool: {
+          name: 'write_file' as const,
+          arguments: { path: 'package.json', content: '{"name":"fixture"}\n' }
+        }
+      },
+      { type: 'PLAN_UPDATE' as const, reason: 'Mark the write complete', plan: plannedTask },
+      {
+        type: 'VERIFY' as const,
+        reason: 'Verify the changed workspace',
+        commands: ['node --version']
+      },
+      {
+        type: 'COMPLETE' as const,
+        reason: 'Done',
+        summary: 'The project file was recovered and verified'
+      }
+    ];
+    const { database, scheduler, task, tools } = await fixture({
+      blockFirstList: false,
+      tools: new FailedWriteThenRecoveredTools(),
+      modelGateway: new FakeModelGateway((request, index) => {
+        requests.push(request);
+        return decisions[index]!;
+      })
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(tools.calls.filter(({ name }) => name === 'write_file')).toHaveLength(2);
+    expect(tools.calls.map(({ name }) => name)).toEqual([
+      'write_file',
+      'write_file',
+      'run_command'
+    ]);
+    expect(database.getToolCalls(task.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          tool: expect.objectContaining({ name: 'write_file' }),
+          status: 'FAILED',
+          result: expect.objectContaining({ error: expect.objectContaining({ code: 'CONFLICT' }) })
+        })
+      ])
+    );
+    expect(
+      requests.some(({ harnessInstruction }) =>
+        harnessInstruction?.includes('previous write_file for package.json failed')
+      )
+    ).toBe(true);
+  });
+
+  it('routes a disallowed model command through verification correction', async () => {
+    const requests: DecisionRequest[] = [];
+    const decisions = [
+      { type: 'PLAN_UPDATE' as const, reason: 'Plan first', plan: plannedTask },
+      {
+        type: 'TOOL_CALL' as const,
+        reason: 'Use an unsupported package command',
+        tool: {
+          name: 'run_command' as const,
+          arguments: { executable: 'npm', args: ['exec'] }
+        }
+      },
+      {
+        type: 'VERIFY' as const,
+        reason: 'Use the allowed runtime check',
+        commands: ['node --version']
+      },
+      { type: 'COMPLETE' as const, reason: 'Complete after verification', summary: 'Done' }
+    ];
+    const { database, scheduler, task } = await fixture({
+      blockFirstList: false,
+      tools: new CommandExposingTools(),
+      modelGateway: new FakeModelGateway((request, index) => {
+        requests.push(request);
+        return decisions[index]!;
+      })
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(database.getVerificationResults(task.id)).toEqual([
+      expect.objectContaining({ command: 'node --version', status: 'PASSED' })
+    ]);
+    expect(
+      requests.some(({ harnessInstruction }) =>
+        harnessInstruction?.includes('previous VERIFY decision was rejected by the command policy')
+      )
+    ).toBe(true);
+  });
+
+  it('advances only the current plan step after an interim verification', async () => {
+    const stagedPlan: TaskPlan = {
+      ...plannedTask,
+      steps: [
+        { id: 'baseline', title: 'Run the baseline tests', status: 'PENDING' },
+        { id: 'implement', title: 'Implement the requested change', status: 'PENDING' },
+        { id: 'final', title: 'Run final verification', status: 'PENDING' }
+      ]
+    };
+    const { database, scheduler, task } = await fixture({
+      goal: 'Modify the parser after establishing a baseline',
+      blockFirstList: false,
+      modelGateway: new FakeModelGateway([
+        { type: 'PLAN_UPDATE', reason: 'Plan first', plan: stagedPlan },
+        { type: 'VERIFY', reason: 'Run the requested baseline', commands: ['node --version'] },
+        { type: 'ASK_USER', reason: 'Inspect state', question: 'Continue?' }
+      ])
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)).toMatchObject({
+      status: 'WAITING_USER',
+      plan: {
+        steps: [
+          { id: 'baseline', status: 'DONE' },
+          { id: 'implement', status: 'RUNNING' },
+          { id: 'final', status: 'PENDING' }
+        ]
+      }
+    });
+  });
+
+  it('reuses a passed verification when the workspace has not changed', async () => {
+    const { database, scheduler, task, tools } = await fixture({
+      blockFirstList: false,
+      modelGateway: new FakeModelGateway([
+        { type: 'PLAN_UPDATE', reason: 'Plan first', plan: plannedTask },
+        { type: 'VERIFY', reason: 'Verify the task', commands: ['node --version'] },
+        { type: 'VERIFY', reason: 'Repeat the same verification', commands: ['node --version'] },
+        { type: 'VERIFY', reason: 'Repeat it again', commands: ['node --version'] },
+        { type: 'VERIFY', reason: 'Repeat it once more', commands: ['node --version'] },
+        { type: 'COMPLETE', reason: 'Done', summary: 'Verified' }
+      ])
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(database.getVerificationResults(task.id)).toHaveLength(1);
+    expect(tools.calls.filter(({ name }) => name === 'run_command')).toHaveLength(1);
+  });
+
+  it('keeps raw read content out of persisted model state while retaining line numbers', async () => {
+    const requests: DecisionRequest[] = [];
+    const decisions = [
+      { type: 'PLAN_UPDATE' as const, reason: 'Plan first', plan: plannedTask },
+      {
+        type: 'TOOL_CALL' as const,
+        reason: 'Read the fixture',
+        tool: { name: 'read_file' as const, arguments: { path: 'README.md' } }
+      },
+      { type: 'COMPLETE' as const, reason: 'Claim completion', summary: 'Done' },
+      { type: 'COMPLETE' as const, reason: 'Claim completion again', summary: 'Done' },
+      { type: 'COMPLETE' as const, reason: 'Claim completion again', summary: 'Done' }
+    ];
+    const { database, scheduler, task } = await fixture({
+      blockFirstList: false,
+      tools: new ReadingAndWritingTools(),
+      modelGateway: new FakeModelGateway((request, index) => {
+        requests.push(request);
+        return decisions[index]!;
+      })
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    const compactContextRequest = requests.find(({ context }) =>
+      context.some(({ content }) => content.includes('numberedContent'))
+    );
+    const observedReadRequest = requests.find(
+      ({ runState }) =>
+        runState.activeTurn?.status === 'OBSERVED' &&
+        runState.activeTurn.decision.type === 'TOOL_CALL' &&
+        runState.activeTurn.decision.tool.name === 'read_file'
+    );
+    expect(compactContextRequest).toBeDefined();
+    expect(
+      compactContextRequest?.context.some(({ content }) => content.includes('"content":'))
+    ).toBe(false);
+    expect(observedReadRequest?.runState.activeTurn?.observation?.summary).toContain(
+      'contentOmitted'
+    );
+    expect(observedReadRequest?.runState.activeTurn?.observation?.summary).not.toContain(
+      'numberedContent'
+    );
+    expect(database.getTask(task.id)?.status).toBe('WAITING_USER');
+  });
+
+  it('reruns a passed verification after a later file write', async () => {
+    const { database, scheduler, task, tools } = await fixture({
+      blockFirstList: false,
+      tools: new WritingTools(),
+      modelGateway: new FakeModelGateway([
+        { type: 'PLAN_UPDATE', reason: 'Plan first', plan: plannedTask },
+        { type: 'VERIFY', reason: 'Verify the initial workspace', commands: ['node --version'] },
+        {
+          type: 'TOOL_CALL',
+          reason: 'Make a later file change',
+          tool: { name: 'write_file', arguments: { path: 'generated.txt', content: 'changed\n' } }
+        },
+        { type: 'VERIFY', reason: 'Verify after the write', commands: ['node --version'] },
+        { type: 'COMPLETE', reason: 'Done', summary: 'Verified after the write' }
+      ])
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(database.getVerificationResults(task.id)).toHaveLength(2);
+    expect(tools.calls.filter(({ name }) => name === 'run_command')).toHaveLength(2);
+  });
+
+  it('does not execute an identical successful write twice', async () => {
+    const requests: DecisionRequest[] = [];
+    const decisions = [
+      { type: 'PLAN_UPDATE' as const, reason: 'Plan first', plan: plannedTask },
+      {
+        type: 'TOOL_CALL' as const,
+        reason: 'Create the generated file',
+        tool: {
+          name: 'write_file' as const,
+          arguments: { path: 'generated.txt', content: 'changed\n' }
+        }
+      },
+      {
+        type: 'TOOL_CALL' as const,
+        reason: 'Repeat the generated file write',
+        tool: {
+          name: 'write_file' as const,
+          arguments: { path: 'generated.txt', content: 'changed\n' }
+        }
+      },
+      {
+        type: 'VERIFY' as const,
+        reason: 'Verify the generated file',
+        commands: ['node --version']
+      },
+      { type: 'COMPLETE' as const, reason: 'Done', summary: 'Generated file verified' }
+    ];
+    const { database, scheduler, task, tools } = await fixture({
+      blockFirstList: false,
+      tools: new WritingTools(),
+      modelGateway: new FakeModelGateway((request, index) => {
+        requests.push(request);
+        return decisions[index]!;
+      })
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(tools.calls.filter(({ name }) => name === 'write_file')).toHaveLength(1);
+    expect(tools.calls.map(({ name }) => name)).toEqual(['write_file', 'run_command']);
+    expect(
+      requests.some(({ harnessInstruction }) =>
+        harnessInstruction?.includes('exactly repeats an earlier write')
+      )
+    ).toBe(true);
+  });
+
+  it('invalidates the completion verification after a later file write', async () => {
+    const { database, scheduler, task } = await fixture({
+      blockFirstList: false,
+      tools: new WritingTools(),
+      modelGateway: new FakeModelGateway([
+        { type: 'PLAN_UPDATE', reason: 'Plan first', plan: plannedTask },
+        { type: 'VERIFY', reason: 'Verify before the write', commands: ['node --version'] },
+        {
+          type: 'TOOL_CALL',
+          reason: 'Change the workspace after verification',
+          tool: { name: 'write_file', arguments: { path: 'generated.txt', content: 'changed\n' } }
+        },
+        { type: 'COMPLETE', reason: 'Claim completion too early', summary: 'Done' },
+        { type: 'VERIFY', reason: 'Verify after the write', commands: ['node --version'] },
+        { type: 'COMPLETE', reason: 'Done after verification', summary: 'Verified' }
+      ])
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(database.getVerificationResults(task.id)).toHaveLength(2);
+  });
+
+  it('recovers from an invalid patch with a targeted correction decision', async () => {
+    const tools = new InvalidPatchThenRecoveredTools(false);
+    const { database, scheduler, task } = await fixture({
+      goal: '修改 fixture.py 并验证修改',
+      blockFirstList: false,
+      tools,
+      modelGateway: new FakeModelGateway([
+        {
+          type: 'PLAN_UPDATE',
+          reason: 'Plan the change',
+          plan: {
+            ...plannedTask,
+            steps: [{ id: 'change', title: 'Change fixture', status: 'PENDING' }]
+          }
+        },
+        {
+          type: 'TOOL_CALL',
+          reason: 'Read the target file',
+          tool: { name: 'read_file', arguments: { path: 'fixture.py' } }
+        },
+        {
+          type: 'TOOL_CALL',
+          reason: 'Apply the planned edits',
+          tool: {
+            name: 'apply_patch',
+            arguments: {
+              path: 'fixture.py',
+              expectedHash: 'a'.repeat(64),
+              edits: [
+                { startLine: 1, deleteCount: 1, lines: ['changed'] },
+                { startLine: 1, deleteCount: 0, lines: ['duplicate range'] }
+              ]
+            }
+          }
+        },
+        {
+          type: 'TOOL_CALL',
+          reason: 'Recover with one valid write after the patch was rejected',
+          tool: { name: 'write_file', arguments: { path: 'fixture.py', content: '# changed\n' } }
+        },
+        {
+          type: 'PLAN_UPDATE',
+          reason: 'The file change is complete',
+          plan: {
+            ...plannedTask,
+            steps: [{ id: 'change', title: 'Change fixture', status: 'DONE' }]
+          }
+        },
+        { type: 'VERIFY', reason: 'Verify the change', commands: ['node --version'] },
+        { type: 'COMPLETE', reason: 'Done', summary: 'Fixture changed and verified' }
+      ])
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(tools.calls.map(({ name }) => name)).toEqual([
+      'read_file',
+      'apply_patch',
+      'write_file',
+      'run_command'
+    ]);
+    expect(
+      database.getToolCalls(task.id).find(({ tool }) => tool.name === 'apply_patch')
+    ).toMatchObject({
+      status: 'FAILED',
+      result: { error: { code: 'VALIDATION_ERROR' } }
+    });
+  });
+
+  it('preserves invalid patch recovery across a user pause without reread churn', async () => {
+    const tools = new InvalidPatchThenRecoveredTools(false);
+    const requests: DecisionRequest[] = [];
+    const decisions = [
+      {
+        type: 'PLAN_UPDATE' as const,
+        reason: 'Plan the change',
+        plan: {
+          ...plannedTask,
+          steps: [{ id: 'change', title: 'Change fixture', status: 'PENDING' as const }]
+        }
+      },
+      {
+        type: 'TOOL_CALL' as const,
+        reason: 'Read the target file',
+        tool: { name: 'read_file' as const, arguments: { path: 'fixture.py' } }
+      },
+      {
+        type: 'TOOL_CALL' as const,
+        reason: 'Submit an invalid patch',
+        tool: {
+          name: 'apply_patch' as const,
+          arguments: {
+            path: 'fixture.py',
+            expectedHash: 'a'.repeat(64),
+            edits: [
+              { startLine: 1, deleteCount: 1, lines: ['changed'] },
+              { startLine: 1, deleteCount: 0, lines: ['duplicate range'] }
+            ]
+          }
+        }
+      },
+      { type: 'ASK_USER' as const, reason: 'Pause for review', question: 'Continue?' },
+      {
+        type: 'TOOL_CALL' as const,
+        reason: 'Recover with a direct write',
+        tool: {
+          name: 'write_file' as const,
+          arguments: { path: 'fixture.py', content: '# changed\n' }
+        }
+      },
+      {
+        type: 'PLAN_UPDATE' as const,
+        reason: 'The file change is complete',
+        plan: {
+          ...plannedTask,
+          steps: [{ id: 'change', title: 'Change fixture', status: 'DONE' as const }]
+        }
+      },
+      { type: 'VERIFY' as const, reason: 'Verify the change', commands: ['node --version'] },
+      { type: 'COMPLETE' as const, reason: 'Done', summary: 'Fixture changed and verified' }
+    ];
+    const { database, scheduler, task } = await fixture({
+      goal: '修改 fixture.py 并验证修改',
+      blockFirstList: false,
+      tools,
+      modelGateway: new FakeModelGateway((request, index) => {
+        requests.push(request);
+        return decisions[index]!;
+      })
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+    expect(database.getTask(task.id)).toMatchObject({ status: 'WAITING_USER' });
+
+    scheduler.resume(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(requests.filter(({ harnessInstruction }) => harnessInstruction)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          harnessInstruction: expect.stringContaining('previous apply_patch was rejected')
+        })
+      ])
+    );
+    expect(tools.calls.map(({ name }) => name)).toEqual([
+      'read_file',
+      'apply_patch',
+      'write_file',
+      'run_command'
+    ]);
+  });
+
+  it('rejects completion when the latest verification supersedes an earlier pass', async () => {
+    const premature = {
+      type: 'COMPLETE' as const,
+      reason: 'Claim completion after a failure',
+      summary: 'Done'
+    };
+    const { database, scheduler, task } = await fixture({
+      blockFirstList: false,
+      modelGateway: new FakeModelGateway([
+        { type: 'PLAN_UPDATE', reason: 'Plan first', plan: plannedTask },
+        { type: 'VERIFY', reason: 'Initial pass', commands: ['node --version'] },
+        { type: 'VERIFY', reason: 'Latest failure', commands: ['node --check missing.js'] },
+        premature,
+        premature,
+        premature
+      ])
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('WAITING_USER');
+    expect(database.getTaskRun(task.id)?.state.lastVerificationPassed).toBe(false);
+    expect(database.getVerificationResults(task.id).map(({ status }) => status)).toEqual([
+      'PASSED',
+      'FAILED'
+    ]);
+    expect(database.getEvents(task.id).map(({ type }) => type)).not.toContain('task.completed');
+  });
+
+  it('persists a final Diff, reviews it, and applies accepted files safely', async () => {
+    const tools = new WritingTools();
+    const { database, harness, scheduler, task, source } = await fixture({
+      tools,
+      modelGateway: new FakeModelGateway(changeDecisions())
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(database.getWorkspaceSnapshots(task.id).at(-1)?.kind).toBe('FINAL');
+    const [change] = harness.getFileChanges(task.id);
+    expect(change).toMatchObject({
+      path: 'generated.txt',
+      status: 'ADDED',
+      additions: 1,
+      deletions: 0,
+      decision: 'PENDING',
+      toolCallId: expect.any(String),
+      stepId: 'inspect',
+      version: 1
+    });
+    await expect(scheduler.apply(task.id)).rejects.toThrow(
+      'Every file change must be accepted or rejected'
+    );
+
+    expect(
+      harness.decideFileChange(task.id, change!.id, 'ACCEPTED', change!.version!)
+    ).toMatchObject({
+      decision: 'ACCEPTED',
+      version: 2
+    });
+    expect(harness.getReport(task.id)).toMatchObject({
+      taskId: task.id,
+      changes: [expect.objectContaining({ decision: 'ACCEPTED' })],
+      verifications: [expect.objectContaining({ status: 'PASSED' })],
+      risks: []
+    });
+    expect((await scheduler.apply(task.id)).status).toBe('APPLIED');
+    expect(await fs.readFile(path.join(source, 'generated.txt'), 'utf8')).toBe('generated\n');
+    expect(database.getEvents(task.id).map(({ type }) => type)).toEqual(
+      expect.arrayContaining(['change.updated', 'task.applied'])
+    );
+
+    const workspaceContent = await fs.readFile(
+      path.join(task.workspacePath, 'generated.txt'),
+      'utf8'
+    );
+    await expect(scheduler.rollback(task.id)).rejects.toThrow('APPLIED');
+    expect(database.getTask(task.id)?.status).toBe('APPLIED');
+    expect(await fs.readFile(path.join(source, 'generated.txt'), 'utf8')).toBe('generated\n');
+    expect(await fs.readFile(path.join(task.workspacePath, 'generated.txt'), 'utf8')).toBe(
+      workspaceContent
+    );
+  });
+
+  it('does not overwrite a source path created after the task baseline', async () => {
+    const tools = new WritingTools();
+    const { database, harness, scheduler, task, source } = await fixture({
+      tools,
+      modelGateway: new FakeModelGateway(changeDecisions('conflict.txt'))
+    });
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+    const [change] = harness.getFileChanges(task.id);
+    harness.decideFileChange(task.id, change!.id, 'ACCEPTED', change!.version!);
+    await fs.writeFile(path.join(source, 'conflict.txt'), 'user content\n');
+
+    await expect(scheduler.apply(task.id)).rejects.toThrow(
+      'Added file no longer has a safe source baseline'
+    );
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(await fs.readFile(path.join(source, 'conflict.txt'), 'utf8')).toBe('user content\n');
+  });
+});

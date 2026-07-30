@@ -1,0 +1,984 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeharness.local/schemas/domain.schema.json",
+  "title": "CodeHarness domain contracts",
+  "$defs": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "taskStatus": {
+      "type": "string",
+      "enum": [
+        "CREATED",
+        "PRECHECKING",
+        "PLANNING",
+        "EXECUTING",
+        "VERIFYING",
+        "READY_FOR_REVIEW",
+        "APPLIED",
+        "WAITING_USER",
+        "PAUSED",
+        "CANCELLED",
+        "FAILED"
+      ]
+    },
+    "planStepStatus": {
+      "type": "string",
+      "enum": ["PENDING", "RUNNING", "DONE"]
+    },
+    "messageRole": {
+      "type": "string",
+      "enum": ["USER", "ASSISTANT", "SYSTEM"]
+    },
+    "decisionType": {
+      "type": "string",
+      "enum": ["TOOL_CALL", "PLAN_UPDATE", "ASK_USER", "VERIFY", "COMPLETE"]
+    },
+    "toolName": {
+      "type": "string",
+      "enum": [
+        "list_files",
+        "search_text",
+        "search_symbol",
+        "read_file",
+        "read_ast",
+        "apply_patch",
+        "write_file",
+        "run_command",
+        "git_diff",
+        "git_status",
+        "index_repository",
+        "search_files",
+        "search_symbols",
+        "find_references",
+        "find_callers",
+        "find_callees",
+        "search_semantic"
+      ]
+    },
+    "toolCallStatus": {
+      "type": "string",
+      "enum": ["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"]
+    },
+    "toolPermission": {
+      "type": "string",
+      "enum": ["READ", "WRITE", "COMMAND", "DESTRUCTIVE", "EXTERNAL"]
+    },
+    "fileChangeStatus": {
+      "type": "string",
+      "enum": ["ADDED", "MODIFIED", "DELETED", "RENAMED"]
+    },
+    "changeDecision": {
+      "type": "string",
+      "enum": ["PENDING", "ACCEPTED", "REJECTED"]
+    },
+    "snapshotKind": {
+      "type": "string",
+      "enum": ["BASELINE", "CHECKPOINT", "FINAL"]
+    },
+    "contextKind": {
+      "type": "string",
+      "enum": ["PROJECT_OVERVIEW", "FILE", "SYMBOL", "SEARCH", "TOOL_RESULT", "LOG", "SUMMARY"]
+    },
+    "verificationStatus": {
+      "type": "string",
+      "enum": ["PASSED", "FAILED", "ERROR", "SKIPPED"]
+    },
+    "verificationFailureCategory": {
+      "type": "string",
+      "enum": ["CODE", "TEST", "ENVIRONMENT", "BASELINE"]
+    },
+    "errorCode": {
+      "type": "string",
+      "enum": [
+        "VALIDATION_ERROR",
+        "NOT_FOUND",
+        "CONFLICT",
+        "FORBIDDEN",
+        "WORKSPACE_ERROR",
+        "COMMAND_NOT_ALLOWED",
+        "MODEL_ERROR",
+        "INDEX_ERROR",
+        "BUDGET_EXCEEDED",
+        "TASK_CANCELLED",
+        "INTERNAL_ERROR"
+      ]
+    },
+    "health": {
+      "type": "object",
+      "required": ["status", "service", "version"],
+      "properties": {
+        "status": { "type": "string", "const": "ok" },
+        "service": { "type": "string", "const": "codeharness-backend" },
+        "version": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "projectCreate": {
+      "type": "object",
+      "required": ["name", "sourcePath"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "sourcePath": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "projectSummary": {
+      "type": "object",
+      "required": ["id", "name", "createdAt"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1 },
+        "createdAt": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": false
+    },
+    "projectRecord": {
+      "type": "object",
+      "required": ["id", "name", "sourcePath", "workspacePath", "createdAt"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1 },
+        "sourcePath": { "type": "string", "minLength": 1 },
+        "workspacePath": { "type": "string", "minLength": 1 },
+        "createdAt": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": false
+    },
+    "projectParams": {
+      "type": "object",
+      "required": ["projectId"],
+      "properties": {
+        "projectId": { "$ref": "#/$defs/id" }
+      },
+      "additionalProperties": false
+    },
+    "projectSearchQuery": {
+      "type": "object",
+      "required": ["q"],
+      "properties": {
+        "q": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 }
+      },
+      "additionalProperties": false
+    },
+    "projectFiles": {
+      "type": "object",
+      "required": ["files"],
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      },
+      "additionalProperties": false
+    },
+    "projectFileContent": {
+      "type": "object",
+      "required": ["path", "content", "bytesRead", "truncated"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "content": { "type": "string" },
+        "bytesRead": { "type": "integer", "minimum": 0 },
+        "truncated": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "sessionCreate": {
+      "type": "object",
+      "required": ["projectId"],
+      "properties": {
+        "projectId": { "$ref": "#/$defs/id" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 }
+      },
+      "additionalProperties": false
+    },
+    "session": {
+      "type": "object",
+      "required": ["id", "projectId", "title", "createdAt"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "projectId": { "$ref": "#/$defs/id" },
+        "title": { "type": "string", "minLength": 1 },
+        "createdAt": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": false
+    },
+    "sessionParams": {
+      "type": "object",
+      "required": ["sessionId"],
+      "properties": {
+        "sessionId": { "$ref": "#/$defs/id" }
+      },
+      "additionalProperties": false
+    },
+    "sessionListQuery": {
+      "type": "object",
+      "properties": {
+        "projectId": { "$ref": "#/$defs/id" }
+      },
+      "additionalProperties": false
+    },
+    "messageCreate": {
+      "type": "object",
+      "required": ["content"],
+      "properties": {
+        "content": { "type": "string", "minLength": 1, "maxLength": 65536 }
+      },
+      "additionalProperties": false
+    },
+    "message": {
+      "type": "object",
+      "required": ["id", "sessionId", "role", "content", "createdAt"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "sessionId": { "$ref": "#/$defs/id" },
+        "role": { "$ref": "#/$defs/messageRole" },
+        "content": { "type": "string" },
+        "createdAt": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": false
+    },
+    "planStep": {
+      "type": "object",
+      "required": ["id", "title", "status"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "status": { "$ref": "#/$defs/planStepStatus" }
+      },
+      "additionalProperties": false
+    },
+    "plan": {
+      "type": "object",
+      "required": ["goal", "assumptions", "steps", "verification"],
+      "properties": {
+        "goal": { "type": "string", "minLength": 1 },
+        "assumptions": { "type": "array", "items": { "type": "string" } },
+        "steps": { "type": "array", "items": { "$ref": "#/$defs/planStep" } },
+        "verification": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "taskCreate": {
+      "type": "object",
+      "required": ["projectId", "sessionId", "goal"],
+      "properties": {
+        "projectId": { "$ref": "#/$defs/id" },
+        "sessionId": { "$ref": "#/$defs/id" },
+        "goal": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "task": {
+      "type": "object",
+      "required": ["id", "sessionId", "projectId", "goal", "status", "createdAt", "updatedAt"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "sessionId": { "$ref": "#/$defs/id" },
+        "projectId": { "$ref": "#/$defs/id" },
+        "goal": { "type": "string", "minLength": 1 },
+        "status": { "$ref": "#/$defs/taskStatus" },
+        "plan": { "$ref": "#/$defs/plan" },
+        "createdAt": { "$ref": "#/$defs/timestamp" },
+        "updatedAt": { "$ref": "#/$defs/timestamp" },
+        "stopReason": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "taskLease": {
+      "type": "object",
+      "required": ["taskId", "ownerId", "acquiredAt", "expiresAt", "version"],
+      "properties": {
+        "taskId": { "$ref": "#/$defs/id" },
+        "ownerId": { "$ref": "#/$defs/id" },
+        "acquiredAt": { "$ref": "#/$defs/timestamp" },
+        "expiresAt": { "$ref": "#/$defs/timestamp" },
+        "version": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "taskRecord": {
+      "type": "object",
+      "required": [
+        "id",
+        "sessionId",
+        "projectId",
+        "goal",
+        "status",
+        "workspacePath",
+        "version",
+        "createdAt",
+        "updatedAt"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "sessionId": { "$ref": "#/$defs/id" },
+        "projectId": { "$ref": "#/$defs/id" },
+        "goal": { "type": "string", "minLength": 1 },
+        "status": { "$ref": "#/$defs/taskStatus" },
+        "plan": { "$ref": "#/$defs/plan" },
+        "workspacePath": { "type": "string", "minLength": 1 },
+        "version": { "type": "integer", "minimum": 1 },
+        "createdAt": { "$ref": "#/$defs/timestamp" },
+        "updatedAt": { "$ref": "#/$defs/timestamp" },
+        "stopReason": { "type": "string" },
+        "resumeStatus": {
+          "type": "string",
+          "enum": ["PLANNING", "EXECUTING", "VERIFYING"]
+        },
+        "controlRequest": { "type": "string", "enum": ["PAUSE", "CANCEL"] }
+      },
+      "additionalProperties": false
+    },
+    "taskParams": {
+      "type": "object",
+      "required": ["taskId"],
+      "properties": {
+        "taskId": { "$ref": "#/$defs/id" }
+      },
+      "additionalProperties": false
+    },
+    "taskListQuery": {
+      "type": "object",
+      "properties": {
+        "projectId": { "$ref": "#/$defs/id" },
+        "sessionId": { "$ref": "#/$defs/id" }
+      },
+      "additionalProperties": false
+    },
+    "changeParams": {
+      "type": "object",
+      "required": ["taskId", "changeId"],
+      "properties": {
+        "taskId": { "$ref": "#/$defs/id" },
+        "changeId": { "$ref": "#/$defs/id" }
+      },
+      "additionalProperties": false
+    },
+    "changeDecisionUpdate": {
+      "type": "object",
+      "required": ["decision", "expectedVersion"],
+      "properties": {
+        "decision": { "type": "string", "enum": ["ACCEPTED", "REJECTED"] },
+        "expectedVersion": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "eventCursorQuery": {
+      "type": "object",
+      "properties": {
+        "after": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "toolCall": {
+      "type": "object",
+      "required": ["name", "arguments"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "enum": [
+            "list_files",
+            "search_text",
+            "search_symbol",
+            "read_file",
+            "read_ast",
+            "apply_patch",
+            "write_file",
+            "run_command",
+            "git_diff",
+            "git_status",
+            "index_repository",
+            "search_files",
+            "search_symbols",
+            "find_references",
+            "find_callers",
+            "find_callees",
+            "search_semantic"
+          ]
+        },
+        "arguments": { "type": "object", "additionalProperties": true }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "name": { "const": "index_repository" } } },
+          "then": {}
+        },
+        {
+          "if": { "properties": { "name": { "const": "search_files" } } },
+          "then": {}
+        },
+        {
+          "if": { "properties": { "name": { "const": "search_symbols" } } },
+          "then": {}
+        },
+        {
+          "if": { "properties": { "name": { "const": "find_references" } } },
+          "then": {}
+        },
+        {
+          "if": { "properties": { "name": { "const": "find_callers" } } },
+          "then": {}
+        },
+        {
+          "if": { "properties": { "name": { "const": "find_callees" } } },
+          "then": {}
+        },
+        {
+          "if": { "properties": { "name": { "const": "search_semantic" } } },
+          "then": {}
+        }
+      ],
+      "additionalProperties": false
+    },
+    "indexQueryResult": {
+      "type": "object",
+      "required": ["path", "line", "entityType", "summary"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "line": { "type": "integer", "minimum": 1 },
+        "entityType": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "ToolCall": {
+      "type": "object",
+      "required": ["name", "arguments"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "enum": [
+            "list_files",
+            "search_text",
+            "search_symbol",
+            "read_file",
+            "read_ast",
+            "apply_patch",
+            "write_file",
+            "run_command",
+            "git_diff",
+            "git_status",
+            "index_repository",
+            "search_files",
+            "search_symbols",
+            "find_references",
+            "find_callers",
+            "find_callees",
+            "search_semantic"
+          ]
+        },
+        "arguments": { "type": "object", "additionalProperties": true }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "name": { "const": "index_repository" } } },
+          "then": {}
+        },
+        {
+          "if": { "properties": { "name": { "const": "search_files" } } },
+          "then": {}
+        },
+        {
+          "if": { "properties": { "name": { "const": "search_symbols" } } },
+          "then": {}
+        },
+        {
+          "if": { "properties": { "name": { "const": "find_references" } } },
+          "then": {}
+        },
+        {
+          "if": { "properties": { "name": { "const": "find_callers" } } },
+          "then": {}
+        },
+        {
+          "if": { "properties": { "name": { "const": "find_callees" } } },
+          "then": {}
+        },
+        {
+          "if": { "properties": { "name": { "const": "search_semantic" } } },
+          "then": {}
+        }
+      ]
+    },
+    "SemanticSearchResult": {
+      "type": "object",
+      "required": ["mode", "items"],
+      "properties": {
+        "mode": { "type": "string", "enum": ["vector", "lexical"] },
+        "items": { "type": "array", "items": { "$ref": "#/$defs/indexQueryResult" } }
+      }
+    },
+    "toolDefinition": {
+      "type": "object",
+      "required": [
+        "name",
+        "version",
+        "description",
+        "permission",
+        "sideEffect",
+        "defaultTimeoutMs",
+        "inputSchema",
+        "outputSchema"
+      ],
+      "properties": {
+        "name": { "$ref": "#/$defs/toolName" },
+        "version": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
+        "permission": { "$ref": "#/$defs/toolPermission" },
+        "sideEffect": { "type": "boolean" },
+        "defaultTimeoutMs": { "type": "integer", "minimum": 1 },
+        "inputSchema": { "type": "object" },
+        "outputSchema": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "toolResult": {
+      "type": "object",
+      "required": ["status", "affectedFiles", "durationMs"],
+      "properties": {
+        "status": { "type": "string", "enum": ["SUCCEEDED", "FAILED", "CANCELLED"] },
+        "output": true,
+        "error": { "$ref": "#/$defs/appError" },
+        "affectedFiles": { "type": "array", "items": { "type": "string" } },
+        "durationMs": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "toolCallRecord": {
+      "type": "object",
+      "required": ["id", "taskId", "tool", "status", "startedAt"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "taskId": { "$ref": "#/$defs/id" },
+        "stepId": { "type": "string", "minLength": 1 },
+        "tool": { "$ref": "#/$defs/toolCall" },
+        "status": { "$ref": "#/$defs/toolCallStatus" },
+        "startedAt": { "$ref": "#/$defs/timestamp" },
+        "finishedAt": { "$ref": "#/$defs/timestamp" },
+        "result": { "$ref": "#/$defs/toolResult" }
+      },
+      "additionalProperties": false
+    },
+    "contextReference": {
+      "type": "object",
+      "required": ["ref", "kind", "source"],
+      "properties": {
+        "ref": { "type": "string", "minLength": 1 },
+        "kind": { "$ref": "#/$defs/contextKind" },
+        "source": { "type": "string", "minLength": 1 },
+        "contentHash": { "type": "string", "minLength": 1 },
+        "startLine": { "type": "integer", "minimum": 1 },
+        "endLine": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "workspaceSnapshot": {
+      "type": "object",
+      "required": ["id", "taskId", "kind", "rootHash", "createdAt"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "taskId": { "$ref": "#/$defs/id" },
+        "kind": { "$ref": "#/$defs/snapshotKind" },
+        "rootHash": { "type": "string", "minLength": 1 },
+        "sourceRevision": { "type": "string", "minLength": 1 },
+        "createdAt": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": false
+    },
+    "runBudget": {
+      "type": "object",
+      "required": [
+        "maxSteps",
+        "maxToolCalls",
+        "maxDurationMs",
+        "maxChangedFiles",
+        "usedSteps",
+        "usedToolCalls"
+      ],
+      "properties": {
+        "maxSteps": { "type": "integer", "minimum": 1 },
+        "maxToolCalls": { "type": "integer", "minimum": 1 },
+        "maxDurationMs": { "type": "integer", "minimum": 1 },
+        "maxChangedFiles": { "type": "integer", "minimum": 0 },
+        "usedSteps": { "type": "integer", "minimum": 0 },
+        "usedToolCalls": { "type": "integer", "minimum": 0 },
+        "maxInputTokens": { "type": "integer", "minimum": 1 },
+        "maxOutputTokens": { "type": "integer", "minimum": 1 },
+        "maxCost": { "type": "number", "exclusiveMinimum": 0 },
+        "maxReadBytes": { "type": "integer", "minimum": 1 },
+        "maxVerificationRuns": { "type": "integer", "minimum": 1 },
+        "usedInputTokens": { "type": "integer", "minimum": 0 },
+        "usedOutputTokens": { "type": "integer", "minimum": 0 },
+        "usedCost": { "type": "number", "minimum": 0 },
+        "usedReadBytes": { "type": "integer", "minimum": 0 },
+        "usedVerificationRuns": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "runState": {
+      "type": "object",
+      "required": [
+        "schemaVersion",
+        "runId",
+        "taskId",
+        "sessionId",
+        "phase",
+        "contextRefs",
+        "toolCallIds",
+        "changedFiles",
+        "verificationResultIds",
+        "budget"
+      ],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/schemaVersion" },
+        "runId": { "$ref": "#/$defs/id" },
+        "taskId": { "$ref": "#/$defs/id" },
+        "sessionId": { "$ref": "#/$defs/id" },
+        "phase": { "$ref": "#/$defs/taskStatus" },
+        "currentStepId": { "type": "string" },
+        "plan": { "$ref": "#/$defs/plan" },
+        "contextRefs": { "type": "array", "items": { "$ref": "#/$defs/contextReference" } },
+        "toolCallIds": { "type": "array", "items": { "$ref": "#/$defs/id" } },
+        "workspaceSnapshotId": { "$ref": "#/$defs/id" },
+        "changedFiles": { "type": "array", "items": { "type": "string" } },
+        "verificationResultIds": { "type": "array", "items": { "$ref": "#/$defs/id" } },
+        "budget": { "$ref": "#/$defs/runBudget" },
+        "turnCount": { "type": "integer", "minimum": 0 },
+        "consecutiveFailures": { "type": "integer", "minimum": 0 },
+        "lastVerificationPassed": { "type": "boolean" },
+        "activeTurn": { "$ref": "#/$defs/harnessTurn" },
+        "stopReason": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "harnessObservation": {
+      "type": "object",
+      "required": ["status", "summary"],
+      "properties": {
+        "status": { "type": "string", "enum": ["SUCCEEDED", "FAILED"] },
+        "summary": { "type": "string" },
+        "toolCallId": { "$ref": "#/$defs/id" },
+        "verificationResultIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "error": {
+          "type": "object",
+          "required": ["code", "message", "retryable"],
+          "properties": {
+            "code": { "$ref": "#/$defs/errorCode" },
+            "message": { "type": "string" },
+            "retryable": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "harnessTurn": {
+      "type": "object",
+      "required": ["sequence", "decision", "status", "startedAt", "updatedAt"],
+      "properties": {
+        "sequence": { "type": "integer", "minimum": 1 },
+        "decision": { "$ref": "#/$defs/modelDecision" },
+        "status": { "type": "string", "enum": ["DECIDED", "OBSERVED"] },
+        "startedAt": { "$ref": "#/$defs/timestamp" },
+        "updatedAt": { "$ref": "#/$defs/timestamp" },
+        "toolCallIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "observation": { "$ref": "#/$defs/harnessObservation" }
+      },
+      "additionalProperties": false
+    },
+    "modelDecision": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type", "reason", "tool"],
+          "properties": {
+            "type": { "const": "TOOL_CALL" },
+            "reason": { "type": "string", "minLength": 1 },
+            "expectedObservation": { "type": "string" },
+            "tool": { "$ref": "#/$defs/toolCall" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "reason", "plan"],
+          "properties": {
+            "type": { "const": "PLAN_UPDATE" },
+            "reason": { "type": "string", "minLength": 1 },
+            "expectedObservation": { "type": "string" },
+            "plan": { "$ref": "#/$defs/plan" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "reason", "question"],
+          "properties": {
+            "type": { "const": "ASK_USER" },
+            "reason": { "type": "string", "minLength": 1 },
+            "expectedObservation": { "type": "string" },
+            "question": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "reason", "commands"],
+          "properties": {
+            "type": { "const": "VERIFY" },
+            "reason": { "type": "string", "minLength": 1 },
+            "expectedObservation": { "type": "string" },
+            "commands": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "reason", "summary"],
+          "properties": {
+            "type": { "const": "COMPLETE" },
+            "reason": { "type": "string", "minLength": 1 },
+            "expectedObservation": { "type": "string" },
+            "summary": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "diffFile": {
+      "type": "object",
+      "required": ["path", "status", "additions", "deletions", "patch"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "status": { "$ref": "#/$defs/fileChangeStatus" },
+        "additions": { "type": "integer", "minimum": 0 },
+        "deletions": { "type": "integer", "minimum": 0 },
+        "patch": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "fileChange": {
+      "type": "object",
+      "required": ["id", "taskId", "path", "status", "additions", "deletions", "patch", "decision"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "taskId": { "$ref": "#/$defs/id" },
+        "path": { "type": "string", "minLength": 1 },
+        "status": { "$ref": "#/$defs/fileChangeStatus" },
+        "additions": { "type": "integer", "minimum": 0 },
+        "deletions": { "type": "integer", "minimum": 0 },
+        "patch": { "type": "string" },
+        "decision": { "$ref": "#/$defs/changeDecision" },
+        "toolCallId": { "$ref": "#/$defs/id" },
+        "stepId": { "type": "string", "minLength": 1 },
+        "version": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "verificationResult": {
+      "type": "object",
+      "required": ["id", "taskId", "command", "status", "outputSummary", "createdAt"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "taskId": { "$ref": "#/$defs/id" },
+        "command": { "type": "string" },
+        "status": { "$ref": "#/$defs/verificationStatus" },
+        "exitCode": { "type": "integer" },
+        "outputSummary": { "type": "string" },
+        "failureCategory": { "$ref": "#/$defs/verificationFailureCategory" },
+        "createdAt": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": false
+    },
+    "taskReport": {
+      "type": "object",
+      "required": [
+        "taskId",
+        "status",
+        "summary",
+        "changes",
+        "verifications",
+        "toolCalls",
+        "risks",
+        "generatedAt"
+      ],
+      "properties": {
+        "taskId": { "$ref": "#/$defs/id" },
+        "status": { "$ref": "#/$defs/taskStatus" },
+        "summary": { "type": "string" },
+        "plan": { "$ref": "#/$defs/plan" },
+        "changes": { "type": "array", "items": { "$ref": "#/$defs/fileChange" } },
+        "verifications": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/verificationResult" }
+        },
+        "toolCalls": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "name", "status"],
+            "properties": {
+              "id": { "$ref": "#/$defs/id" },
+              "stepId": { "type": "string", "minLength": 1 },
+              "name": { "$ref": "#/$defs/toolName" },
+              "status": { "$ref": "#/$defs/toolCallStatus" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "risks": { "type": "array", "items": { "type": "string" } },
+        "generatedAt": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": false
+    },
+    "runtimeMetrics": {
+      "type": "object",
+      "required": ["generatedAt", "tasks", "tools", "verifications", "modelUsage"],
+      "properties": {
+        "generatedAt": { "$ref": "#/$defs/timestamp" },
+        "tasks": {
+          "type": "object",
+          "required": [
+            "total",
+            "byStatus",
+            "successful",
+            "failed",
+            "successRate",
+            "averageDurationMs"
+          ],
+          "properties": {
+            "total": { "type": "integer", "minimum": 0 },
+            "byStatus": {
+              "type": "object",
+              "required": [
+                "CREATED",
+                "PRECHECKING",
+                "PLANNING",
+                "EXECUTING",
+                "VERIFYING",
+                "READY_FOR_REVIEW",
+                "APPLIED",
+                "WAITING_USER",
+                "PAUSED",
+                "CANCELLED",
+                "FAILED"
+              ],
+              "properties": {
+                "CREATED": { "type": "integer", "minimum": 0 },
+                "PRECHECKING": { "type": "integer", "minimum": 0 },
+                "PLANNING": { "type": "integer", "minimum": 0 },
+                "EXECUTING": { "type": "integer", "minimum": 0 },
+                "VERIFYING": { "type": "integer", "minimum": 0 },
+                "READY_FOR_REVIEW": { "type": "integer", "minimum": 0 },
+                "APPLIED": { "type": "integer", "minimum": 0 },
+                "WAITING_USER": { "type": "integer", "minimum": 0 },
+                "PAUSED": { "type": "integer", "minimum": 0 },
+                "CANCELLED": { "type": "integer", "minimum": 0 },
+                "FAILED": { "type": "integer", "minimum": 0 }
+              },
+              "additionalProperties": false
+            },
+            "successful": { "type": "integer", "minimum": 0 },
+            "failed": { "type": "integer", "minimum": 0 },
+            "successRate": { "type": "number", "minimum": 0, "maximum": 1 },
+            "averageDurationMs": { "type": "number", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "tools": {
+          "type": "object",
+          "required": ["total", "failed", "cancelled", "failureRate"],
+          "properties": {
+            "total": { "type": "integer", "minimum": 0 },
+            "failed": { "type": "integer", "minimum": 0 },
+            "cancelled": { "type": "integer", "minimum": 0 },
+            "failureRate": { "type": "number", "minimum": 0, "maximum": 1 }
+          },
+          "additionalProperties": false
+        },
+        "verifications": {
+          "type": "object",
+          "required": ["total", "failed", "errors"],
+          "properties": {
+            "total": { "type": "integer", "minimum": 0 },
+            "failed": { "type": "integer", "minimum": 0 },
+            "errors": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "modelUsage": {
+          "type": "object",
+          "required": ["inputTokens", "outputTokens", "cost"],
+          "properties": {
+            "inputTokens": { "type": "integer", "minimum": 0 },
+            "outputTokens": { "type": "integer", "minimum": 0 },
+            "cost": { "type": "number", "minimum": 0 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "auditRecord": {
+      "type": "object",
+      "required": ["id", "action", "resourceType", "resourceId", "timestamp"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "actorId": { "type": "string" },
+        "action": { "type": "string", "minLength": 1 },
+        "resourceType": { "type": "string", "minLength": 1 },
+        "resourceId": { "type": "string", "minLength": 1 },
+        "before": true,
+        "after": true,
+        "timestamp": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": false
+    },
+    "searchResult": {
+      "type": "object",
+      "required": ["path", "line", "preview"],
+      "properties": {
+        "path": { "type": "string" },
+        "line": { "type": "integer", "minimum": 1 },
+        "preview": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "appError": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "$ref": "#/$defs/errorCode" },
+        "message": { "type": "string" },
+        "details": true,
+        "retryable": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "errorResponse": {
+      "type": "object",
+      "required": ["error"],
+      "properties": {
+        "error": { "$ref": "#/$defs/appError" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -10,6 +10,8 @@ Thumbs.db
 .env.*
 !.env.example
 *.local
+*.key
+*.pem
 
 # Dependencies and build output
 node_modules/
@@ -20,14 +22,24 @@ target/
 coverage/
 *.log
 
+# Python bytecode
+__pycache__/
+*.py[cod]
+
 # Local project data
 .cache/
 .data/
 workspace/
 tmp/
 reports/
+docs/test-results/
+docs/test-reports/
+docs/coverage/
 
 # Generated indexes and model artifacts
 *.index/
 *.sqlite
 *.db
+
+# Local AI development notes
+Mydocs/
