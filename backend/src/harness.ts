@@ -744,13 +744,14 @@ export class HarnessRunner {
       this.dependencies.budgetManager.reserveStep(checkpoint.state)
     );
     const recoveryInstruction = this.recoveryInstruction(task.id);
-    const recoveryExcludedTools: readonly ToolCall['name'][] = recoveryInstruction
-      ? [
-          ...(this.hasReadAfterInvalidPatch(task.id) ? (['read_file'] as const) : []),
-          'list_files',
-          'git_diff'
-        ]
-      : [];
+    const recoveryExcludedTools: readonly ToolCall['name'][] =
+      recoveryInstruction && this.isInvalidPatchObservation(task.id)
+        ? [
+            ...(this.hasReadAfterInvalidPatch(task.id) ? (['read_file'] as const) : []),
+            'list_files',
+            'git_diff'
+          ]
+        : [];
     let response = await this.requestDecision(
       this.planningRequest(
         checkpoint.state,
@@ -870,7 +871,7 @@ export class HarnessRunner {
           checkpoint.state,
           selection.entries,
           `Correction ${correctionAttempt} of 1: the requested ${repeatedToolName ?? 'read'} call exactly repeats a successful read whose latest result is already present in TOOL_RESULT context. The workspace has not changed since that read. You MUST NOT request ${repeatedToolName ?? 'that read'} again. Use the existing file content now and return a different decision. If the file is invalid, return apply_patch with a hash and edits that repair it; otherwise verify, update the plan, or complete the next step.`,
-          repeatedToolName ? [repeatedToolName] : []
+          []
         ),
         signal
       );
@@ -889,6 +890,56 @@ export class HarnessRunner {
       } else {
         this.assertDecisionProgress(task.id, checkpoint.state, response.decision);
       }
+    }
+    if (this.isRepeatedReadDecision(task.id, checkpoint.state, response.decision)) {
+      checkpoint = this.saveRunCheckpoint(
+        checkpoint,
+        this.dependencies.budgetManager.recordModelUsage(checkpoint.state, response.usage)
+      );
+      this.dependencies.budgetManager.assertWithin(checkpoint.state);
+      response = await this.requestDecision(
+        this.planningRequest(
+          checkpoint.state,
+          selection.entries,
+          'The requested inspection exactly repeats a successful call and adds no new information. Do not repeat any tool call with the same arguments. A different file or unread read_file line range is allowed. Use the existing TOOL_RESULT context and return PLAN_UPDATE to advance the current step if its outcome is complete, or return a distinct read, write, patch, or VERIFY decision.',
+          []
+        ),
+        signal
+      );
+      this.assertDecision(response.decision);
+      if (this.isRepeatedReadDecision(task.id, checkpoint.state, response.decision)) {
+        this.assertDecisionProgress(task.id, checkpoint.state, response.decision);
+      }
+    }
+    for (
+      let correctionAttempt = 1;
+      correctionAttempt <= 1 && this.isRepeatedWriteDecision(task.id, response.decision);
+      correctionAttempt += 1
+    ) {
+      checkpoint = this.saveRunCheckpoint(
+        checkpoint,
+        this.dependencies.budgetManager.recordModelUsage(checkpoint.state, response.usage)
+      );
+      this.dependencies.budgetManager.assertWithin(checkpoint.state);
+      response = await this.requestDecision(
+        this.planningRequest(
+          checkpoint.state,
+          selection.entries,
+          `Correction ${correctionAttempt} of 1: the requested write_file call exactly repeats an earlier write in this task run, including a write that already failed or produced no change. Treat the latest TOOL_RESULT as authoritative. Do not submit the same path, content, and expectedHash again. If the desired content is already present, return git_diff, VERIFY, PLAN_UPDATE, or COMPLETE as appropriate. If the file still needs a change, read it once and return a new write_file with genuinely different content and the current expectedHash.`
+        ),
+        signal
+      );
+      this.assertDecision(response.decision);
+    }
+    if (this.isRepeatedWriteDecision(task.id, response.decision)) {
+      response = {
+        ...response,
+        decision: {
+          type: 'TOOL_CALL',
+          reason: 'Harness fallback: inspect the current workspace after repeated writes',
+          tool: { name: 'git_diff', arguments: {} }
+        }
+      };
     }
     checkpoint = this.saveRunCheckpoint(
       checkpoint,
@@ -1638,7 +1689,7 @@ export class HarnessRunner {
   }
 
   private latestInvalidPatchCall(taskId: string): ToolCallRecord | undefined {
-    const calls = this.dependencies.database.getToolCalls(taskId).filter(({ result }) => result);
+    const calls = this.currentRunCompletedToolCalls(taskId);
     const patchIndex = [...calls]
       .reverse()
       .findIndex(
@@ -1662,12 +1713,62 @@ export class HarnessRunner {
     return calls[actualIndex];
   }
 
+  private latestFailedWriteCall(taskId: string): ToolCallRecord | undefined {
+    const calls = this.currentRunCompletedToolCalls(taskId);
+    const failedWriteIndex = [...calls]
+      .reverse()
+      .findIndex(
+        ({ tool, result }) =>
+          tool.name === 'write_file' &&
+          result?.status === 'FAILED' &&
+          result.error?.code === 'CONFLICT'
+      );
+    if (failedWriteIndex < 0) return undefined;
+    const actualIndex = calls.length - failedWriteIndex - 1;
+    const failedWrite = calls[actualIndex];
+    const path = failedWrite.tool.arguments.path;
+    if (typeof path !== 'string') return failedWrite;
+    if (
+      calls
+        .slice(actualIndex + 1)
+        .some(
+          ({ tool, result }) =>
+            (tool.name === 'write_file' || tool.name === 'apply_patch') &&
+            result?.status === 'SUCCEEDED' &&
+            result.affectedFiles?.includes(path)
+        )
+    ) {
+      return undefined;
+    }
+    return failedWrite;
+  }
+
+  private currentRunCompletedToolCalls(taskId: string): ToolCallRecord[] {
+    const runStartedAt = this.dependencies.database.getTaskRun(taskId)?.startedAt;
+    if (!runStartedAt) return [];
+    return this.dependencies.database
+      .getToolCalls(taskId)
+      .filter((call) => call.result && Date.parse(call.startedAt) >= Date.parse(runStartedAt));
+  }
+
   private isInvalidPatchObservation(taskId: string): boolean {
     return this.latestInvalidPatchCall(taskId) !== undefined;
   }
 
   private recoveryInstruction(taskId: string): string | undefined {
     const invalidPatch = this.latestInvalidPatchCall(taskId);
+    const failedWrite = this.latestFailedWriteCall(taskId);
+    if (
+      failedWrite &&
+      (!invalidPatch || Date.parse(failedWrite.startedAt) >= Date.parse(invalidPatch.startedAt))
+    ) {
+      const path =
+        typeof failedWrite.tool.arguments.path === 'string'
+          ? failedWrite.tool.arguments.path
+          : '<unknown path>';
+      const message = failedWrite.result?.error?.message ?? 'write_file failed';
+      return `The previous write_file for ${path} failed: ${message}. Treat the tool result as authoritative. Do not repeat the same path, content, or expectedHash. If the current file already contains the desired content, do not write it again; inspect the diff, verify the result, update the plan, or complete as appropriate. If it still needs a change, read the current file once and submit a new write_file with genuinely different content and the current expectedHash.`;
+    }
     if (!invalidPatch) return undefined;
     const details = invalidPatch.result?.error?.details;
     const lineCount =
@@ -1685,7 +1786,7 @@ export class HarnessRunner {
   private hasReadAfterInvalidPatch(taskId: string): boolean {
     const invalidPatch = this.latestInvalidPatchCall(taskId);
     if (!invalidPatch) return false;
-    const calls = this.dependencies.database.getToolCalls(taskId).filter(({ result }) => result);
+    const calls = this.currentRunCompletedToolCalls(taskId);
     const invalidIndex = calls.findIndex(({ id }) => id === invalidPatch.id);
     return calls
       .slice(invalidIndex + 1)
@@ -1721,15 +1822,9 @@ export class HarnessRunner {
       return false;
     }
 
-    const runStartedAt = this.dependencies.database.getTaskRun(taskId)?.startedAt;
-    if (!runStartedAt) return false;
-
-    const successfulCalls = this.dependencies.database
-      .getToolCalls(taskId)
-      .filter(
-        (call) =>
-          call.status === 'SUCCEEDED' && Date.parse(call.startedAt) >= Date.parse(runStartedAt)
-      );
+    const successfulCalls = this.currentRunCompletedToolCalls(taskId).filter(
+      (call) => call.status === 'SUCCEEDED'
+    );
     const reverseIndex = [...successfulCalls]
       .reverse()
       .findIndex(
@@ -1743,6 +1838,80 @@ export class HarnessRunner {
     // A successful workspace write invalidates earlier reads, so rereading
     // after a change remains valid and gives the model fresh context.
     return !successfulCalls
+      .slice(matchingIndex + 1)
+      .some(({ result }) => (result?.affectedFiles?.length ?? 0) > 0);
+  }
+
+  private advanceRepeatedFileRead(
+    taskId: string,
+    state: RunState,
+    decision: ModelDecision
+  ): ModelDecision {
+    if (
+      decision.type !== 'TOOL_CALL' ||
+      decision.tool.name !== 'read_file' ||
+      !this.isRepeatedReadDecision(taskId, state, decision)
+    ) {
+      return decision;
+    }
+    const requestedPath = decision.tool.arguments.path;
+    if (typeof requestedPath !== 'string') return decision;
+
+    const callsSinceLastWrite = [...this.currentRunCompletedToolCalls(taskId)].reverse();
+    const firstWriteIndex = callsSinceLastWrite.findIndex(
+      ({ result }) => result?.status === 'SUCCEEDED' && (result.affectedFiles?.length ?? 0) > 0
+    );
+    const currentWorkspaceCalls =
+      firstWriteIndex < 0 ? callsSinceLastWrite : callsSinceLastWrite.slice(0, firstWriteIndex);
+    const furthestRead = currentWorkspaceCalls
+      .filter(
+        ({ tool, result }) =>
+          tool.name === 'read_file' &&
+          tool.arguments.path === requestedPath &&
+          result?.status === 'SUCCEEDED'
+      )
+      .map(({ result }) => result?.output)
+      .filter(
+        (output): output is Record<string, unknown> =>
+          output !== null && typeof output === 'object' && !Array.isArray(output)
+      )
+      .filter((output) => typeof output.endLine === 'number' && typeof output.hasMore === 'boolean')
+      .sort((left, right) => Number(right.endLine) - Number(left.endLine))[0];
+    if (!furthestRead?.hasMore) return decision;
+
+    return {
+      type: 'TOOL_CALL',
+      reason: 'Harness continuation: read the next unread section of the requested file',
+      tool: {
+        name: 'read_file',
+        arguments: {
+          path: requestedPath,
+          startLine: Number(furthestRead.endLine) + 1,
+          ...(typeof decision.tool.arguments.maxLines === 'number'
+            ? { maxLines: decision.tool.arguments.maxLines }
+            : {})
+        }
+      }
+    };
+  }
+
+  private isRepeatedWriteDecision(taskId: string, decision: ModelDecision): boolean {
+    if (decision.type !== 'TOOL_CALL' || decision.tool.name !== 'write_file') return false;
+
+    const calls = this.currentRunCompletedToolCalls(taskId);
+    const reverseIndex = [...calls]
+      .reverse()
+      .findIndex(
+        (call) =>
+          call.tool.name === 'write_file' &&
+          JSON.stringify(call.tool.arguments) === JSON.stringify(decision.tool.arguments)
+      );
+    const matchingIndex = reverseIndex < 0 ? -1 : calls.length - reverseIndex - 1;
+    if (matchingIndex < 0) return false;
+
+    // As with reads, a later successful workspace write invalidates the earlier
+    // decision context; only repeat while the workspace has not changed.
+    return !calls
       .slice(matchingIndex + 1)
       .some(({ result }) => (result?.affectedFiles?.length ?? 0) > 0);
   }
@@ -1815,22 +1984,32 @@ export class HarnessRunner {
     signal: AbortSignal
   ): Promise<DecisionResponse> {
     const response = await this.dependencies.modelGateway.decide(request, signal);
-    return { ...response, decision: this.normalizeDecision(response.decision) };
+    const decision = this.normalizeDecision(response.decision);
+    return {
+      ...response,
+      decision: this.advanceRepeatedFileRead(request.runState.taskId, request.runState, decision)
+    };
   }
 
   private normalizeDecision(decision: ModelDecision): ModelDecision {
     if (decision.type !== 'TOOL_CALL' || decision.tool.name !== 'run_command') return decision;
     const executable = decision.tool.arguments.executable;
     const args = decision.tool.arguments.args;
-    if (
-      typeof executable !== 'string' ||
-      !Array.isArray(args) ||
-      !args.every((arg) => typeof arg === 'string')
-    ) {
-      return decision;
+    const command =
+      typeof executable === 'string' && Array.isArray(args)
+        ? [executable, ...args.map((arg) => String(arg))].join(' ')
+        : 'run_command <invalid arguments>';
+    try {
+      parseAllowedCommand(command);
+    } catch {
+      // Route disallowed internal commands through the existing VERIFY correction path.
+      return {
+        type: 'VERIFY',
+        reason: decision.reason,
+        expectedObservation: decision.expectedObservation,
+        commands: [command]
+      };
     }
-    const command = [executable, ...args].join(' ');
-    parseAllowedCommand(command);
     return {
       type: 'VERIFY',
       reason: decision.reason,
@@ -2133,6 +2312,9 @@ export class HarnessRunner {
         return {
           path: record.path,
           lineCount: record.lineCount,
+          startLine: record.startLine,
+          endLine: record.endLine,
+          hasMore: record.hasMore,
           hash: record.hash,
           bytes: record.bytes,
           contentOmitted: true
@@ -2160,6 +2342,9 @@ export class HarnessRunner {
         output: {
           path: output.path,
           lineCount: output.lineCount,
+          startLine: output.startLine,
+          endLine: output.endLine,
+          hasMore: output.hasMore,
           numberedContent: output.numberedContent,
           hash: output.hash,
           bytes: output.bytes

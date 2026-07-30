@@ -24,6 +24,9 @@ interface ReadFileOutput {
   path: string;
   content: string;
   lineCount: number;
+  startLine: number;
+  endLine: number;
+  hasMore: boolean;
   numberedContent: string;
   hash: string;
   bytes: number;
@@ -44,6 +47,7 @@ interface PatchEdit {
 
 const sha256Pattern = '^[0-9a-f]{64}$';
 const relativePathSchema = { type: 'string', minLength: 1, maxLength: 4_096 } as const;
+const defaultReadFileLines = 200;
 
 const definitions: ToolDefinition[] = [
   {
@@ -98,24 +102,41 @@ const definitions: ToolDefinition[] = [
   },
   {
     name: 'read_file',
-    version: '1.0.0',
-    description: 'Read a bounded UTF-8 text file with its content hash',
+    version: '1.1.0',
+    description: 'Read a bounded line range from a UTF-8 text file with its full-file content hash',
     permission: 'READ',
     sideEffect: false,
     defaultTimeoutMs: 5_000,
     inputSchema: {
       type: 'object',
       required: ['path'],
-      properties: { path: relativePathSchema },
+      properties: {
+        path: relativePathSchema,
+        startLine: { type: 'integer', minimum: 1 },
+        maxLines: { type: 'integer', minimum: 1, maximum: 500 }
+      },
       additionalProperties: false
     },
     outputSchema: {
       type: 'object',
-      required: ['path', 'content', 'hash', 'bytes'],
+      required: [
+        'path',
+        'content',
+        'lineCount',
+        'startLine',
+        'endLine',
+        'hasMore',
+        'numberedContent',
+        'hash',
+        'bytes'
+      ],
       properties: {
         path: { type: 'string' },
         content: { type: 'string' },
         lineCount: { type: 'integer', minimum: 0 },
+        startLine: { type: 'integer', minimum: 1 },
+        endLine: { type: 'integer', minimum: 0 },
+        hasMore: { type: 'boolean' },
         numberedContent: { type: 'string' },
         hash: { type: 'string', pattern: sha256Pattern },
         bytes: { type: 'integer', minimum: 0 }
@@ -384,8 +405,30 @@ export class ToolExecutor implements ToolRegistrationPort {
     context: ToolExecutionContext
   ): Promise<{ output: ReadFileOutput }> {
     const requestedPath = arguments_.path as string;
+    const startLine = (arguments_.startLine as number | undefined) ?? 1;
+    const maxLines = (arguments_.maxLines as number | undefined) ?? defaultReadFileLines;
+    const file = await this.readTextFile(context.workspacePath, requestedPath, context.signal);
+    if (startLine > Math.max(1, file.lineCount)) {
+      throw new AppError('VALIDATION_ERROR', 'Requested line range starts beyond the file', {
+        path: requestedPath,
+        startLine,
+        lineCount: file.lineCount
+      });
+    }
+    const lines = this.fileLines(file.content);
+    const selectedLines = this.boundedReadLines(lines, startLine, maxLines);
+    const endLine = selectedLines.length === 0 ? 0 : startLine + selectedLines.length - 1;
+    const wholeFile = startLine === 1 && selectedLines.length === lines.length;
+    const eol = file.content.includes('\r\n') ? '\r\n' : file.content.includes('\r') ? '\r' : '\n';
     return {
-      output: await this.readTextFile(context.workspacePath, requestedPath, context.signal)
+      output: {
+        ...file,
+        content: wholeFile ? file.content : selectedLines.join(eol),
+        startLine,
+        endLine,
+        hasMore: endLine < file.lineCount,
+        numberedContent: this.numberedLines(selectedLines, startLine, file.lineCount)
+      }
     };
   }
 
@@ -630,6 +673,9 @@ export class ToolExecutor implements ToolRegistrationPort {
         path: normalizedRelative(requestedPath),
         content: text,
         lineCount: this.fileLines(text).length,
+        startLine: 1,
+        endLine: this.fileLines(text).length,
+        hasMore: false,
         numberedContent: this.numberedContent(text),
         hash: contentHash(content),
         bytes: content.length
@@ -641,10 +687,34 @@ export class ToolExecutor implements ToolRegistrationPort {
 
   private numberedContent(text: string): string {
     const lines = this.fileLines(text);
-    const width = Math.max(1, String(lines.length).length);
+    return this.numberedLines(lines, 1, lines.length);
+  }
+
+  private numberedLines(lines: readonly string[], startLine: number, totalLines: number): string {
+    const width = Math.max(1, String(totalLines).length);
     return lines
-      .map((line, index) => `${String(index + 1).padStart(width, ' ')} | ${line}`)
+      .map((line, index) => `${String(startLine + index).padStart(width, ' ')} | ${line}`)
       .join('\n');
+  }
+
+  private boundedReadLines(
+    lines: readonly string[],
+    startLine: number,
+    maxLines: number
+  ): string[] {
+    const selected: string[] = [];
+    const width = Math.max(1, String(lines.length).length);
+    const contextBudget = Math.max(1, Math.floor(config.maxContextEntryBytes * 0.75));
+    let encodedBytes = 0;
+    for (const [offset, line] of lines.slice(startLine - 1, startLine - 1 + maxLines).entries()) {
+      const numberedLine = `${String(startLine + offset).padStart(width, ' ')} | ${line}`;
+      const lineBytes = Buffer.byteLength(JSON.stringify(numberedLine)) - 2;
+      const separatorBytes = selected.length === 0 ? 0 : 2;
+      if (selected.length > 0 && encodedBytes + separatorBytes + lineBytes > contextBudget) break;
+      selected.push(line);
+      encodedBytes += separatorBytes + lineBytes;
+    }
+    return selected;
   }
 
   private fileLines(text: string): string[] {

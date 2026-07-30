@@ -92,6 +92,7 @@ export function assertCommandAllowed(request: CommandRequest): void {
     const allowed =
       (command === '--version' && script === undefined) ||
       (command === 'test' && script === undefined) ||
+      ((command === 'install' || command === 'ci') && script === undefined && rest.length === 0) ||
       (command === 'run' &&
         typeof script === 'string' &&
         npmScriptName.test(script) &&
@@ -199,7 +200,7 @@ export class ControlledCommandRunner {
       try {
         child = spawn(executable, spawnArgs, {
           cwd: workspace,
-          env: this.commandEnvironment(temporaryDirectory),
+          env: this.commandEnvironment(temporaryDirectory, request),
           shell: false,
           windowsHide: true,
           detached: process.platform !== 'win32'
@@ -303,13 +304,19 @@ export class ControlledCommandRunner {
     return Math.min(Number(seconds) * 1_000, this.maxTimeoutMs);
   }
 
-  private commandEnvironment(temporaryDirectory?: string): NodeJS.ProcessEnv {
+  private commandEnvironment(
+    temporaryDirectory?: string,
+    request?: CommandRequest
+  ): NodeJS.ProcessEnv {
+    const isDependencyBootstrap =
+      request?.executable === 'npm' && ['install', 'ci'].includes(request.args[0] ?? '');
     const environment: NodeJS.ProcessEnv = {
       CI: 'true',
       GIT_TERMINAL_PROMPT: '0',
       npm_config_audit: 'false',
       npm_config_fund: 'false',
-      npm_config_update_notifier: 'false'
+      npm_config_update_notifier: 'false',
+      ...(isDependencyBootstrap ? { npm_config_ignore_scripts: 'true' } : {})
     };
     const allowed = [
       'PATH',

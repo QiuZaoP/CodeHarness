@@ -237,14 +237,18 @@ test('validates every supported structured decision type and rejects invalid JSO
 test('documents the boundary between file tools and allowlisted verification commands', () => {
   const systemPrompt = buildDecisionMessages(decisionRequest)[0]?.content ?? '';
   assert.match(systemPrompt, /read_file to read file contents/);
+  assert.match(systemPrompt, /returns a context-bounded range of at most 200 lines by default/);
   assert.match(systemPrompt, /git_diff to inspect a complete diff/);
   assert.match(systemPrompt, /git diff or git diff --check as the final verification command/);
   assert.match(systemPrompt, /Never put cat/);
   assert.match(systemPrompt, /plan\.verification array contains acceptance criteria/);
   assert.match(systemPrompt, /not to a shell/);
   assert.match(systemPrompt, /run_command is an internal verification implementation/);
+  assert.match(systemPrompt, /npm ci when package-lock\.json exists, otherwise npm install/);
   assert.match(systemPrompt, /3 to 5 outcome-oriented steps/);
   assert.match(systemPrompt, /avoid rerunning the same suite after every small patch/);
+  assert.match(systemPrompt, /When the outcomes of the current RUNNING plan step are complete/);
+  assert.match(systemPrompt, /After write_file succeeds or returns a CONFLICT\/NO_OP_WRITE result/);
 });
 
 test('places harness correction feedback in the trusted system instruction', () => {

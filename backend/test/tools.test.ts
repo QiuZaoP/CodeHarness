@@ -79,6 +79,11 @@ describe('registered tool runtime', () => {
       executable: 'pytest',
       args: ['tests/test_parser.py']
     });
+    expect(parseAllowedCommand('npm install')).toEqual({ executable: 'npm', args: ['install'] });
+    expect(parseAllowedCommand('npm ci')).toEqual({ executable: 'npm', args: ['ci'] });
+    expect(() => parseAllowedCommand('npm install some-package')).toThrow(
+      'Executable or subcommand is not allowed by policy'
+    );
     expect(() => parseAllowedCommand('python scripts/check.py')).toThrow(
       'Executable or subcommand is not allowed by policy'
     );
@@ -209,9 +214,7 @@ describe('registered tool runtime', () => {
       content: string;
       lineCount: number;
       numberedContent: string;
-    }>(
-      await tools.execute({ name: 'read_file', arguments: { path: 'README.md' } }, context)
-    );
+    }>(await tools.execute({ name: 'read_file', arguments: { path: 'README.md' } }, context));
     expect(read.content).toBe('first\nsecond\nthird\n');
     expect(read.lineCount).toBe(3);
     expect(read.numberedContent).toBe('1 | first\n2 | second\n3 | third');
@@ -331,10 +334,6 @@ describe('registered tool runtime', () => {
       {
         name: 'run_command',
         arguments: { executable: 'node', args: ['--version;whoami'] }
-      },
-      {
-        name: 'run_command',
-        arguments: { executable: 'npm', args: ['install'] }
       }
     ] satisfies ToolCall[]) {
       expect(await tools.execute(call, context)).toMatchObject({
@@ -342,6 +341,26 @@ describe('registered tool runtime', () => {
         error: { code: 'COMMAND_NOT_ALLOWED', retryable: false }
       });
     }
+
+    const install = output<{ code: number }>(
+      await tools.execute(
+        { name: 'run_command', arguments: { executable: 'npm', args: ['install'] } },
+        context
+      )
+    );
+    expect(install.code).toBe(0);
+    expect(
+      await tools.execute(
+        {
+          name: 'run_command',
+          arguments: { executable: 'npm', args: ['install', 'unapproved-package'] }
+        },
+        context
+      )
+    ).toMatchObject({
+      status: 'FAILED',
+      error: { code: 'COMMAND_NOT_ALLOWED', retryable: false }
+    });
 
     const noisy = output<{
       code: number;
@@ -416,6 +435,66 @@ describe('registered tool runtime', () => {
     );
     expect(whitespaceError.code).toBe(2);
     expect(whitespaceError.stdout).toContain('trailing whitespace');
+  });
+
+  it('reads large files in stable line ranges without losing original line numbers', async () => {
+    const { workspace, tools, context } = await fixture();
+    const content = Array.from({ length: 205 }, (_, index) => `line ${index + 1}`).join('\n');
+    await fs.writeFile(path.join(workspace, 'long.txt'), `${content}\n`);
+
+    const first = output<{
+      content: string;
+      lineCount: number;
+      startLine: number;
+      endLine: number;
+      hasMore: boolean;
+      numberedContent: string;
+      hash: string;
+    }>(await tools.execute({ name: 'read_file', arguments: { path: 'long.txt' } }, context));
+    const second = output<typeof first>(
+      await tools.execute(
+        { name: 'read_file', arguments: { path: 'long.txt', startLine: 201 } },
+        context
+      )
+    );
+
+    expect(first).toMatchObject({ lineCount: 205, startLine: 1, endLine: 200, hasMore: true });
+    expect(first.numberedContent).toContain('  1 | line 1');
+    expect(first.numberedContent).toContain('200 | line 200');
+    expect(second).toMatchObject({ lineCount: 205, startLine: 201, endLine: 205, hasMore: false });
+    expect(second.numberedContent).toBe(
+      [
+        '201 | line 201',
+        '202 | line 202',
+        '203 | line 203',
+        '204 | line 204',
+        '205 | line 205'
+      ].join('\n')
+    );
+    expect(second.hash).toBe(first.hash);
+  });
+
+  it('bounds read ranges by serialized context size as well as line count', async () => {
+    const { workspace, tools, context } = await fixture();
+    const content = Array.from(
+      { length: 30 },
+      (_, index) => `${index + 1}:${'x'.repeat(1_000)}`
+    ).join('\n');
+    await fs.writeFile(path.join(workspace, 'wide.txt'), `${content}\n`);
+
+    const read = output<{
+      lineCount: number;
+      startLine: number;
+      endLine: number;
+      hasMore: boolean;
+      numberedContent: string;
+    }>(await tools.execute({ name: 'read_file', arguments: { path: 'wide.txt' } }, context));
+
+    expect(read).toMatchObject({ lineCount: 30, startLine: 1, hasMore: true });
+    expect(read.endLine).toBeLessThan(30);
+    expect(Buffer.byteLength(JSON.stringify(read.numberedContent))).toBeLessThanOrEqual(
+      Math.floor(config.maxContextEntryBytes * 0.75) + 2
+    );
   });
 
   it('serializes side-effect tools for the same workspace', async () => {
