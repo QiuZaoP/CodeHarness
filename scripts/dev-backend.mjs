@@ -21,8 +21,15 @@ async function hasRunningCodeHarness() {
 }
 
 if (await hasRunningCodeHarness()) {
-  console.warn(`CodeHarness backend is already running at http://${host}:${port}; reusing it`);
-  process.exit(0);
+  if (process.env.CODEHARNESS_REUSE_BACKEND === 'true') {
+    console.warn(`CodeHarness backend is already running at http://${host}:${port}; reusing it`);
+    process.exit(0);
+  }
+  console.error(
+    `CodeHarness backend is already running at http://${host}:${port}. Stop it before starting ` +
+      'this checkout, or set CODEHARNESS_REUSE_BACKEND=true to reuse it explicitly.'
+  );
+  process.exit(1);
 }
 
 const tsxCli = fileURLToPath(import.meta.resolve('tsx/cli'));

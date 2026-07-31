@@ -6,7 +6,12 @@ import path from 'node:path';
 import { TextDecoder } from 'node:util';
 import { config } from './config.js';
 import { AppError } from './errors.js';
-import type { SourceGitMetadata, SourceMetadata, WorkspaceSnapshot } from './types.js';
+import type {
+  SourceGitMetadata,
+  SourceMetadata,
+  SourceSkippedFile,
+  WorkspaceSnapshot
+} from './types.js';
 import type { FileChange, FileChangeStatus } from './types.js';
 
 const ignoredSourceEntries = new Set([
@@ -28,7 +33,82 @@ const ignoredSourceEntries = new Set([
 
 // Generated local databases are not source files and can be large or locked while the app runs.
 const ignoredSourceFileExtensions = new Set(['.db', '.sqlite', '.sqlite3']);
+// These files may be required at runtime, so small projects still import them. They receive a
+// separate budget because datasets, trained models, media libraries, and archives are not useful
+// model context and can otherwise make a code-project import copy gigabytes of local artifacts.
+const budgetedArtifactExtensions = new Set([
+  '.7z',
+  '.avi',
+  '.bin',
+  '.bmp',
+  '.bz2',
+  '.class',
+  '.csv',
+  '.dll',
+  '.doc',
+  '.docx',
+  '.dylib',
+  '.exe',
+  '.feather',
+  '.flac',
+  '.gif',
+  '.gz',
+  '.h5',
+  '.hdf5',
+  '.ico',
+  '.jar',
+  '.jpeg',
+  '.jpg',
+  '.lib',
+  '.m4a',
+  '.mkv',
+  '.mov',
+  '.mp3',
+  '.mp4',
+  '.nbc',
+  '.nbi',
+  '.npy',
+  '.npz',
+  '.obj',
+  '.onnx',
+  '.otf',
+  '.parquet',
+  '.pdf',
+  '.pickle',
+  '.pkl',
+  '.png',
+  '.ppt',
+  '.pptx',
+  '.pt',
+  '.pth',
+  '.rar',
+  '.safetensors',
+  '.so',
+  '.tar',
+  '.tflite',
+  '.tsv',
+  '.ttf',
+  '.wav',
+  '.webm',
+  '.webp',
+  '.whl',
+  '.woff',
+  '.woff2',
+  '.xls',
+  '.xlsx',
+  '.xz',
+  '.zip',
+  '.zst'
+]);
+const skippableOversizedTextArtifactExtensions = new Set([
+  '.ipynb',
+  '.json',
+  '.jsonl',
+  '.lock',
+  '.map'
+]);
 const taskGitWhitespacePolicy = 'blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol';
+const maxSkippedFileSamples = 100;
 
 function isSensitiveSourceEntry(name: string): boolean {
   return (
@@ -50,6 +130,20 @@ function isExcludedSourcePath(filePath: string): boolean {
   );
 }
 
+function isBudgetedArtifactPath(filePath: string): boolean {
+  return budgetedArtifactExtensions.has(
+    path.posix.extname(normalizedRelative(filePath)).toLowerCase()
+  );
+}
+
+function canSkipOversizedArtifact(filePath: string): boolean {
+  const extension = path.posix.extname(normalizedRelative(filePath)).toLowerCase();
+  return (
+    budgetedArtifactExtensions.has(extension) ||
+    skippableOversizedTextArtifactExtensions.has(extension)
+  );
+}
+
 interface ManifestEntry {
   kind: 'file' | 'directory';
   path: string;
@@ -68,6 +162,8 @@ export interface WorkspaceOptions {
   root: string;
   maxImportFiles: number;
   maxImportBytes: number;
+  maxImportArtifactFiles: number;
+  maxImportArtifactBytes: number;
   maxFileBytes: number;
   retentionHours: number;
 }
@@ -111,6 +207,8 @@ const defaultOptions: WorkspaceOptions = {
   root: config.workspaceRoot,
   maxImportFiles: config.maxImportFiles,
   maxImportBytes: config.maxImportBytes,
+  maxImportArtifactFiles: config.maxImportArtifactFiles,
+  maxImportArtifactBytes: config.maxImportArtifactBytes,
   maxFileBytes: config.maxFileBytes,
   retentionHours: config.workspaceRetentionHours
 };
@@ -188,6 +286,35 @@ export class WorkspaceManager {
       if (created) await this.removeValidated(projectPath, this.root);
       throw error;
     }
+  }
+
+  async refreshImportedProject(sourcePath: string, projectId: string): Promise<ImportedProject> {
+    assertIdentifier(projectId, 'projectId');
+    const source = await this.requireSourceDirectory(sourcePath);
+    await this.assertNonRecursiveSource(source);
+    const projectPath = this.projectPath(projectId);
+    const metadataPath = path.join(projectPath, 'source-metadata');
+    const metadataStat = await fs.stat(metadataPath).catch(() => undefined);
+    if (!metadataStat?.isDirectory()) {
+      throw new AppError(
+        'NOT_FOUND',
+        'Imported project metadata does not exist',
+        { projectId },
+        404
+      );
+    }
+    const capture = await this.captureSource(source);
+    await fs.writeFile(
+      path.join(metadataPath, 'manifest.json'),
+      `${JSON.stringify(capture.manifest, null, 2)}\n`,
+      'utf8'
+    );
+    await fs.writeFile(
+      path.join(metadataPath, 'source.json'),
+      `${JSON.stringify(capture.metadata, null, 2)}\n`,
+      'utf8'
+    );
+    return { sourcePath: source, projectPath, metadata: capture.metadata };
   }
 
   async createTaskWorkspace(
@@ -762,6 +889,23 @@ export class WorkspaceManager {
     const manifest: ManifestEntry[] = [];
     let fileCount = 0;
     let totalBytes = 0;
+    let artifactFileCount = 0;
+    let artifactBytes = 0;
+    let skippedFileCount = 0;
+    let skippedBytes = 0;
+    const skippedFiles: SourceSkippedFile[] = [];
+
+    const recordSkippedFile = (
+      relativePath: string,
+      size: number,
+      reason: SourceSkippedFile['reason']
+    ): void => {
+      skippedFileCount += 1;
+      skippedBytes += size;
+      if (skippedFiles.length < maxSkippedFileSamples) {
+        skippedFiles.push({ path: normalizedRelative(relativePath), size, reason });
+      }
+    };
 
     const walk = async (directory: string, relativeDirectory = ''): Promise<void> => {
       const entries = await fs.readdir(directory, { withFileTypes: true });
@@ -800,7 +944,25 @@ export class WorkspaceManager {
         if (ignoredSourceFileExtensions.has(path.extname(entry.name).toLowerCase())) {
           continue;
         }
+        const normalizedPath = normalizedRelative(relativePath);
+        const artifact = isBudgetedArtifactPath(normalizedPath);
+        if (stat.size > this.options.maxFileBytes && canSkipOversizedArtifact(normalizedPath)) {
+          recordSkippedFile(normalizedPath, stat.size, 'OVERSIZED_ARTIFACT');
+          continue;
+        }
+        if (artifact && artifactFileCount + 1 > this.options.maxImportArtifactFiles) {
+          recordSkippedFile(normalizedPath, stat.size, 'ARTIFACT_FILE_BUDGET');
+          continue;
+        }
+        if (artifact && artifactBytes + stat.size > this.options.maxImportArtifactBytes) {
+          recordSkippedFile(normalizedPath, stat.size, 'ARTIFACT_BYTE_BUDGET');
+          continue;
+        }
         if (fileCount + 1 > this.options.maxImportFiles) {
+          if (artifact) {
+            recordSkippedFile(normalizedPath, stat.size, 'ARTIFACT_FILE_BUDGET');
+            continue;
+          }
           throw new AppError('WORKSPACE_ERROR', 'Source exceeds the import file count limit', {
             maxImportFiles: this.options.maxImportFiles
           });
@@ -809,12 +971,16 @@ export class WorkspaceManager {
           sourceEntry,
           normalizedRelative(relativePath)
         );
-        totalBytes += content.length;
-        if (totalBytes > this.options.maxImportBytes) {
+        if (totalBytes + content.length > this.options.maxImportBytes) {
+          if (artifact) {
+            recordSkippedFile(normalizedPath, content.length, 'ARTIFACT_BYTE_BUDGET');
+            continue;
+          }
           throw new AppError('WORKSPACE_ERROR', 'Source exceeds the total import size limit', {
             maxImportBytes: this.options.maxImportBytes
           });
         }
+        totalBytes += content.length;
         const entryHash = hash(content);
         manifest.push({
           kind: 'file',
@@ -830,6 +996,10 @@ export class WorkspaceManager {
           await fs.writeFile(destinationFile, content, { mode });
         }
         fileCount += 1;
+        if (artifact) {
+          artifactFileCount += 1;
+          artifactBytes += content.length;
+        }
       }
     };
 
@@ -844,7 +1014,8 @@ export class WorkspaceManager {
         fileCount,
         totalBytes,
         manifestHash: manifestHash(manifest),
-        git
+        git,
+        ...(skippedFileCount > 0 ? { skippedFileCount, skippedBytes, skippedFiles } : undefined)
       }
     };
   }

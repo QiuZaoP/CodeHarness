@@ -256,6 +256,16 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
       const { name, sourcePath } = request.body;
       const id = randomUUID();
       const imported = await workspaceManager.importProject(sourcePath, id);
+      if (imported.metadata.skippedFileCount) {
+        request.log.info(
+          {
+            projectId: id,
+            skippedFileCount: imported.metadata.skippedFileCount,
+            skippedBytes: imported.metadata.skippedBytes
+          },
+          'Project imported with non-source artifacts omitted'
+        );
+      }
       try {
         database.createProject({
           id,
@@ -269,7 +279,7 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
         await workspaceManager.removeProject(id);
         throw error;
       }
-      await nativeCodeIndex.build(id, imported.projectPath);
+      await nativeCodeIndex.build(id, imported.sourcePath);
       return reply.code(201).send(database.getProject(id));
     }
   );
@@ -651,7 +661,24 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
         response: { 200: domainRef('task'), ...errorResponses }
       }
     },
-    async (request) => scheduler.apply(request.params.taskId)
+    async (request) => {
+      const task = await scheduler.apply(request.params.taskId);
+      const project = database.getProject(task.projectId);
+      if (!project) {
+        throw new AppError('NOT_FOUND', 'Project not found after task apply', {
+          projectId: task.projectId
+        });
+      }
+      try {
+        await nativeCodeIndex.build(project.id, project.sourcePath);
+      } catch (error) {
+        request.log.warn(
+          { err: error, projectId: project.id, taskId: task.id },
+          'Applied project code index refresh failed; text fallback remains available'
+        );
+      }
+      return task;
+    }
   );
   app.post<{ Params: { taskId: string } }>(
     '/api/v1/tasks/:taskId/rollback',

@@ -78,8 +78,11 @@ export function assertCommandAllowed(request: CommandRequest): void {
   if (request.executable === 'node') {
     const [command, target, ...rest] = request.args;
     const allowed =
-      ((command === '--version' || command === '-v' || command === '--test') &&
-        target === undefined) ||
+      ((command === '--version' || command === '-v') && target === undefined) ||
+      (command === '--test' &&
+        (target === undefined ||
+          (relativeTestPath.test(target) &&
+            rest.every((argument) => relativeTestPath.test(argument))))) ||
       (command === '--check' &&
         typeof target === 'string' &&
         relativeJavaScriptPath.test(target) &&
@@ -178,9 +181,10 @@ export class ControlledCommandRunner {
                 : request.args;
         }
       }
+      if (request.executable === 'node') executable = process.execPath;
       if (process.platform === 'win32' && request.executable === 'npm') {
-        const npmCli = process.env.npm_execpath;
-        if (!npmCli || !/npm-cli\.js$/i.test(npmCli)) {
+        const npmCli = this.findNpmCli();
+        if (!npmCli) {
           reject(
             new AppError(
               'WORKSPACE_ERROR',
@@ -313,14 +317,15 @@ export class ControlledCommandRunner {
     const environment: NodeJS.ProcessEnv = {
       CI: 'true',
       GIT_TERMINAL_PROMPT: '0',
+      PATH: [path.dirname(process.execPath), process.env.PATH ?? process.env.Path]
+        .filter((entry): entry is string => Boolean(entry))
+        .join(path.delimiter),
       npm_config_audit: 'false',
       npm_config_fund: 'false',
       npm_config_update_notifier: 'false',
       ...(isDependencyBootstrap ? { npm_config_ignore_scripts: 'true' } : {})
     };
     const allowed = [
-      'PATH',
-      'Path',
       'PATHEXT',
       'SystemRoot',
       'ComSpec',
@@ -347,6 +352,22 @@ export class ControlledCommandRunner {
       signal.reason ??
       new AppError('TASK_CANCELLED', 'Command execution was cancelled', undefined, 409)
     );
+  }
+
+  private findNpmCli(): string | undefined {
+    const candidates = [
+      process.env.npm_execpath,
+      path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js')
+    ];
+    for (const candidate of candidates) {
+      if (typeof candidate !== 'string' || !/npm-cli\.js$/i.test(candidate)) continue;
+      try {
+        if (fs.statSync(candidate).isFile()) return candidate;
+      } catch {
+        // Try the next trusted runtime location.
+      }
+    }
+    return undefined;
   }
 
   private environmentError(request: CommandRequest, error: unknown): AppError {

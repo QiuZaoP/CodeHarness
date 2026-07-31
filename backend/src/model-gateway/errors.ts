@@ -23,6 +23,18 @@ export class ModelGatewayError extends AppError {
   }
 }
 
+export function safeModelDiagnostic(value: unknown): string {
+  const raw = value instanceof Error ? value.message : String(value || 'unknown provider failure');
+  return raw
+    .replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [REDACTED]')
+    .replace(
+      /((?:api[_-]?key|access[_-]?token|authorization|secret)\s*[:=]\s*)["']?[^\s,"';]+/gi,
+      '$1[REDACTED]'
+    )
+    .replace(/(?:sk|key|token)[-_][A-Za-z0-9_-]{8,}/gi, '[REDACTED]')
+    .slice(0, 300);
+}
+
 export function isAbortError(error: unknown): boolean {
   return (
     (error instanceof DOMException && error.name === 'AbortError') ||

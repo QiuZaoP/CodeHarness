@@ -92,7 +92,7 @@ function languageForPath(filePath: string): string {
   return languages[extension || ''] || 'text';
 }
 
-function fileTreeFromPaths(filePaths: string[]): FileNode[] {
+export function fileTreeFromPaths(filePaths: string[]): FileNode[] {
   const roots: FileNode[] = [];
   for (const filePath of filePaths) {
     let children = roots;
@@ -393,6 +393,16 @@ export function createWorkspaceApi(apiBaseUrl = configuredApiBaseUrl) {
         body: JSON.stringify({ name: projectNameFromPath(path), sourcePath: path })
       });
       return mapBackendProject(project, path);
+    },
+
+    async listProjectFiles(projectId: string): Promise<string[]> {
+      if (useMock) {
+        return Object.keys(initialSnapshot.files).sort((left, right) => left.localeCompare(right));
+      }
+      const projectFiles = await request<{ files: string[] }>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/files`
+      );
+      return projectFiles.files;
     },
 
     async getProjectFile(projectId: string, filePath: string): Promise<CodeFile> {

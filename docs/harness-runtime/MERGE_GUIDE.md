@@ -98,7 +98,7 @@ npm run dev:frontend
 
 | 分组      | 变量                                                                                                                            |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| 服务      | `NODE_ENV`、`HOST`、`PORT`、`LOG_LEVEL`                                                                                         |
+| 服务      | `NODE_ENV`、`HOST`、`PORT`、`CODEHARNESS_REUSE_BACKEND`、`LOG_LEVEL`                                                            |
 | 存储      | `DATABASE_PATH`、`WORKSPACE_ROOT`                                                                                               |
 | 单次工具  | `MAX_COMMAND_TIMEOUT_MS`、`MAX_COMMAND_OUTPUT_BYTES`、`MAX_READ_FILE_BYTES`、`MAX_TOOL_ARGUMENT_BYTES`、`MAX_TOOL_OUTPUT_BYTES` |
 | 调度      | `TASK_LEASE_TTL_MS`、`TASK_CONTROL_POLL_MS`                                                                                     |
@@ -107,7 +107,7 @@ npm run dev:frontend
 | 模型预算  | `MAX_MODEL_INPUT_TOKENS`、`MAX_MODEL_OUTPUT_TOKENS`、`MAX_MODEL_COST`                                                           |
 | 上下文    | `MAX_CONTEXT_BYTES`、`MAX_CONTEXT_ENTRY_BYTES`、`MAX_CONTEXT_ENTRIES`、`MAX_CONTEXT_HISTORY_MESSAGES`、`MAX_CONTEXT_READ_BYTES` |
 | 验证/失败 | `MAX_VERIFICATION_RUNS`、`MAX_CONSECUTIVE_HARNESS_FAILURES`                                                                     |
-| 导入      | `MAX_IMPORT_FILES`、`MAX_IMPORT_BYTES`、`MAX_FILE_BYTES`                                                                        |
+| 导入      | `MAX_IMPORT_FILES`、`MAX_IMPORT_BYTES`、`MAX_IMPORT_ARTIFACT_FILES`、`MAX_IMPORT_ARTIFACT_BYTES`、`MAX_FILE_BYTES`              |
 | 保留      | `WORKSPACE_RETENTION_HOURS`、`WORKSPACE_PRUNE_INTERVAL_MS`                                                                      |
 | HTTP/SSE  | `CORS_ORIGINS`、`SSE_REPLAY_INTERVAL_MS`、`SSE_MAX_PENDING_EVENTS`                                                              |
 | 模式      | `MOCK_MODE`、`VITE_API_BASE_URL`                                                                                                |

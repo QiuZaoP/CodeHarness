@@ -34,6 +34,7 @@ import type {
   FileChange,
   Message,
   RuntimeMetrics,
+  SourceMetadata,
   StoredTask,
   TaskLease,
   TaskStatus,
@@ -127,6 +128,10 @@ export class AppDatabase {
 
   createProject(record: ProjectRecord): void {
     this.projects.create(record);
+  }
+
+  updateProjectSourceMetadata(projectId: string, sourceMetadata: SourceMetadata): ProjectRecord {
+    return this.projects.updateSourceMetadata(projectId, sourceMetadata);
   }
 
   getProject(id: string): ProjectRecord | undefined {

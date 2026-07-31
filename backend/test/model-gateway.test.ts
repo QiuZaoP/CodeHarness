@@ -262,6 +262,40 @@ test('places harness correction feedback in the trusted system instruction', () 
   assert.doesNotMatch(messages[1]?.content ?? '', /harness-validation/);
 });
 
+test('places empty-project bootstrap guidance in trusted prompt context', () => {
+  const instruction =
+    'The imported project is empty. Create the first scaffold file with write_file and do not inspect it.';
+  const messages = buildDecisionMessages({
+    ...decisionRequest,
+    runState: { ...decisionRequest.runState, phase: 'EXECUTING' },
+    harnessInstruction: instruction,
+    availableTools: [
+      {
+        ...decisionRequest.availableTools[0]!,
+        name: 'write_file',
+        permission: 'WRITE',
+        sideEffect: true
+      }
+    ]
+  });
+  const systemPrompt = messages[0]?.content ?? '';
+  assert.match(systemPrompt, /trusted harness context says the imported project is empty/i);
+  assert.match(systemPrompt, /Create the first scaffold file with write_file/);
+  assert.match(systemPrompt, /minimal runnable scaffold/);
+});
+
+test('documents the empty-project bootstrap instruction', () => {
+  const messages = buildDecisionMessages({
+    ...decisionRequest,
+    runState: { ...decisionRequest.runState, phase: 'EXECUTING' },
+    harnessInstruction:
+      'The imported project is empty. Do not inspect it; create the first scaffold file with write_file.'
+  });
+  assert.match(messages[0]?.content ?? '', /imported project is empty/);
+  assert.match(messages[0]?.content ?? '', /start with write_file/);
+  assert.match(messages[0]?.content ?? '', /Trusted harness instruction/);
+});
+
 test('fake gateway summarizes project entry and stack questions from overview context', async () => {
   const gateway = new FakeModelGateway();
   const response = await gateway.decide(
@@ -362,6 +396,56 @@ test('retries rate limits, honors retry-after, and does not leak the API key', a
     },
     (error: unknown) => {
       assert.equal(String(error).includes(secret), false);
+      return true;
+    }
+  );
+});
+
+test('surfaces a sanitized provider cause for generic gateway failures', async () => {
+  const secret = 'super-secret-value-12345';
+  const gateway = new DeepSeekModelGateway(config({ maxRetries: 0 }), {
+    fetchImpl: async () => {
+      throw new Error(`socket disconnected api_key=${secret}`);
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      gateway.summarize(
+        { goal: 'g', observations: [], changedFiles: [] },
+        new AbortController().signal
+      ),
+    (error: unknown) => {
+      assert.ok(error instanceof ModelGatewayError);
+      const cause = String((error.details as { cause?: unknown }).cause ?? '');
+      assert.match(cause, /socket disconnected/);
+      assert.match(cause, /\[REDACTED\]/);
+      assert.equal(cause.includes(secret), false);
+      return true;
+    }
+  );
+});
+
+test('includes a safe provider cause in model failure diagnostics', async () => {
+  const secret = 'api_key=super-secret-provider-value';
+  const gateway = new DeepSeekModelGateway(config({ maxRetries: 0 }), {
+    fetchImpl: async () => {
+      throw new Error(`socket disconnected: ${secret}`);
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      gateway.summarize(
+        { goal: 'g', observations: [], changedFiles: [] },
+        new AbortController().signal
+      ),
+    (error: unknown) => {
+      assert.ok(error instanceof ModelGatewayError);
+      assert.match(error.message, /Model summarize failed/);
+      assert.match(error.message, /socket disconnected/);
+      assert.equal(error.message.includes('super-secret-provider-value'), false);
+      assert.equal(JSON.stringify(error.details).includes('super-secret-provider-value'), false);
       return true;
     }
   );

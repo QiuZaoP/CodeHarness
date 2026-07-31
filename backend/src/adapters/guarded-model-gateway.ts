@@ -9,7 +9,7 @@ import type {
   SummaryRequest,
   SummaryResponse
 } from '../ports/model-gateway.js';
-import { ModelGatewayError } from '../model-gateway/errors.js';
+import { ModelGatewayError, safeModelDiagnostic } from '../model-gateway/errors.js';
 import { parseModelDecision } from '../model-gateway/structured.js';
 import { withTimeout } from '../model-gateway/http.js';
 
@@ -103,7 +103,7 @@ export class GuardedModelGateway implements ModelGateway {
         `Model ${operation} failed`,
         'PROVIDER',
         {
-          cause: error instanceof Error ? error.message : 'unknown failure'
+          cause: safeModelDiagnostic(error)
         },
         502
       );

@@ -71,6 +71,13 @@ describe('registered tool runtime', () => {
       executable: 'node',
       args: ['--check', 'src/main.mjs']
     });
+    expect(parseAllowedCommand('node --test backend/test/campus-eats.test.js')).toEqual({
+      executable: 'node',
+      args: ['--test', 'backend/test/campus-eats.test.js']
+    });
+    expect(() => parseAllowedCommand('node --test ../outside.test.js')).toThrow(
+      'Executable or subcommand is not allowed by policy'
+    );
     expect(parseAllowedCommand('python -m pytest tests/test_parser.py -x --timeout=20')).toEqual({
       executable: 'python',
       args: ['-m', 'pytest', 'tests/test_parser.py', '-x', '--timeout=20']
@@ -342,13 +349,20 @@ describe('registered tool runtime', () => {
       });
     }
 
-    const install = output<{ code: number }>(
-      await tools.execute(
+    const inheritedNpmExecPath = process.env.npm_execpath;
+    delete process.env.npm_execpath;
+    let install: ToolResult;
+    try {
+      install = await tools.execute(
         { name: 'run_command', arguments: { executable: 'npm', args: ['install'] } },
         context
-      )
-    );
-    expect(install.code).toBe(0);
+      );
+    } finally {
+      if (inheritedNpmExecPath === undefined) delete process.env.npm_execpath;
+      else process.env.npm_execpath = inheritedNpmExecPath;
+    }
+    const installOutput = output<{ code: number }>(install);
+    expect(installOutput.code).toBe(0);
     expect(
       await tools.execute(
         {

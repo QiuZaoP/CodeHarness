@@ -11,6 +11,7 @@ import { logger } from './logger.js';
 import type { ToolRegistrationPort } from './ports/tool-registry.js';
 import type { DecisionRequest, DecisionResponse, ModelGateway } from './ports/model-gateway.js';
 import type { CodeIndex, ProjectOverview } from './ports/code-index.js';
+import { safeModelDiagnostic } from './model-gateway/errors.js';
 import { taskStateMachine } from './state-machine.js';
 import { contractSchemaVersion } from './types.js';
 import type {
@@ -32,6 +33,40 @@ import type {
   WorkspaceSnapshot
 } from './types.js';
 import type { WorkspaceManager } from './workspace.js';
+
+const emptyProjectUnavailableTools = [
+  'list_files',
+  'search_text',
+  'search_symbol',
+  'read_file',
+  'read_ast',
+  'apply_patch',
+  'git_diff',
+  'git_status',
+  'index_repository',
+  'search_files',
+  'search_symbols',
+  'find_references',
+  'find_callers',
+  'find_callees',
+  'search_semantic'
+] as const satisfies readonly ToolCall['name'][];
+
+const emptyProjectInstruction = [
+  'The imported project is empty: its captured source metadata reports zero files. Treat this as authoritative.',
+  'Do not list, search, index, read, or inspect Git state before the first successful workspace write.',
+  'If the user supplied concrete creation requirements, create a minimal runnable scaffold immediately with write_file; group related files into a few outcome-oriented plan steps.',
+  'For a frontend/backend-separated request, create the essential root manifest/configuration, frontend entry, and backend entry before verification. Do not install dependencies before a package manifest exists.',
+  'If a requirement that materially determines the project is missing, return ASK_USER instead of guessing or inspecting the empty workspace.'
+].join(' ');
+
+const repeatedInspectionTools = [
+  'list_files',
+  'read_file',
+  'git_diff'
+] as const satisfies readonly ToolCall['name'][];
+const maxRepeatedReadCorrections = 2;
+const inspectionLoopThreshold = 6;
 
 export interface HarnessDependencies {
   database: AppDatabase;
@@ -114,10 +149,31 @@ export class HarnessRunner {
       }
       if (task.status === 'PLANNING') {
         this.throwIfStopped(task.id, signal);
-        const plan = task.plan ?? (await this.plan(task, signal));
-        task = this.transition(task, 'EXECUTING', { plan }, [
-          { type: 'task.plan.updated', payload: { plan } }
-        ]);
+        if (task.plan) {
+          const plan = task.plan;
+          task = this.transition(task, 'EXECUTING', { plan }, [
+            { type: 'task.plan.updated', payload: { plan } }
+          ]);
+        } else {
+          const decision = await this.plan(task, signal);
+          if (decision.type === 'ASK_USER') {
+            task = this.transition(
+              this.requireTask(task.id),
+              'WAITING_USER',
+              {
+                stopReason: decision.question,
+                resumeStatus: 'PLANNING',
+                controlRequest: null
+              },
+              [{ type: 'task.waiting_user', payload: { message: decision.question } }]
+            );
+          } else {
+            const plan = decision.plan;
+            task = this.transition(task, 'EXECUTING', { plan }, [
+              { type: 'task.plan.updated', payload: { plan } }
+            ]);
+          }
+        }
       }
       if (task.status === 'EXECUTING') {
         this.throwIfStopped(task.id, signal);
@@ -180,15 +236,16 @@ export class HarnessRunner {
           this.requiresUserReview(error)) &&
         taskStateMachine.canTransition(current.status, 'WAITING_USER')
       ) {
+        const message = this.userFacingErrorMessage(error);
         return this.transition(
           current,
           'WAITING_USER',
           {
-            stopReason: error.message,
+            stopReason: message,
             resumeStatus: taskStateMachine.pauseResumeTarget(current.status),
             controlRequest: null
           },
-          [{ type: 'task.waiting_user', payload: { message: error.message } }]
+          [{ type: 'task.waiting_user', payload: { message } }]
         );
       }
       if (
@@ -405,20 +462,44 @@ export class HarnessRunner {
       throw new AppError('WORKSPACE_ERROR', 'Apply baseline or project source is missing');
     }
     const acceptedCount = changes.filter(({ decision }) => decision === 'ACCEPTED').length;
-    return this.dependencies.workspaceManager.applyAcceptedChanges(
-      task.id,
-      task.workspacePath,
-      project.sourcePath,
-      baseline,
-      changes,
-      () =>
-        this.transition(
-          this.requireTask(taskId),
-          'APPLIED',
-          { stopReason: null, resumeStatus: null, controlRequest: null },
-          [{ type: 'task.applied', payload: { changeCount: acceptedCount } }]
-        )
-    );
+    try {
+      return await this.dependencies.workspaceManager.applyAcceptedChanges(
+        task.id,
+        task.workspacePath,
+        project.sourcePath,
+        baseline,
+        changes,
+        async () => {
+          const refreshed = await this.dependencies.workspaceManager.refreshImportedProject(
+            project.sourcePath,
+            project.id
+          );
+          this.dependencies.database.updateProjectSourceMetadata(project.id, refreshed.metadata);
+          return this.transition(
+            this.requireTask(taskId),
+            'APPLIED',
+            { stopReason: null, resumeStatus: null, controlRequest: null },
+            [{ type: 'task.applied', payload: { changeCount: acceptedCount } }]
+          );
+        }
+      );
+    } catch (error) {
+      // The source has been restored by applyAcceptedChanges. Realign metadata if a
+      // post-copy synchronization step caused the apply transaction to fail.
+      try {
+        const restored = await this.dependencies.workspaceManager.refreshImportedProject(
+          project.sourcePath,
+          project.id
+        );
+        this.dependencies.database.updateProjectSourceMetadata(project.id, restored.metadata);
+      } catch {
+        logger.warn(
+          { projectId: project.id, taskId: task.id },
+          'Project metadata recovery failed after task apply was rolled back'
+        );
+      }
+      throw error;
+    }
   }
 
   async rollback(taskId: string): Promise<StoredTask> {
@@ -752,15 +833,28 @@ export class HarnessRunner {
             'git_diff'
           ]
         : [];
-    let response = await this.requestDecision(
-      this.planningRequest(
-        checkpoint.state,
-        selection.entries,
-        recoveryInstruction,
-        recoveryExcludedTools
-      ),
-      signal
+    const emptyBootstrap = this.isEmptyProjectBootstrap(task, overview, checkpoint.state);
+    const emptyExcludedTools: readonly ToolCall['name'][] = emptyBootstrap
+      ? emptyProjectUnavailableTools
+      : [];
+    const baseInstruction = this.combineHarnessInstructions(
+      emptyBootstrap ? emptyProjectInstruction : undefined,
+      recoveryInstruction
     );
+    const baseExcludedTools = this.combineExcludedTools(emptyExcludedTools, recoveryExcludedTools);
+    const decisionRequest = (
+      requestState: RunState,
+      correction?: string,
+      additionalExcludedTools: readonly ToolCall['name'][] = [],
+      requestContext: readonly SelectedContext[] = selection.entries
+    ) =>
+      this.planningRequest(
+        requestState,
+        requestContext,
+        this.combineHarnessInstructions(baseInstruction, correction),
+        this.combineExcludedTools(baseExcludedTools, additionalExcludedTools)
+      );
+    let response = await this.requestDecision(decisionRequest(checkpoint.state), signal);
     try {
       this.assertDecision(response.decision);
     } catch (error) {
@@ -771,9 +865,8 @@ export class HarnessRunner {
       );
       this.dependencies.budgetManager.assertWithin(checkpoint.state);
       response = await this.requestDecision(
-        this.planningRequest(
+        decisionRequest(
           checkpoint.state,
-          selection.entries,
           'The previous VERIFY decision was rejected by the command policy. Return VERIFY only with a literal allowlisted command such as "python -m pytest tests/test_parser.py -v" or "git diff --check". Do not return file-reading commands, shell commands, checklist text, or natural-language instructions.'
         ),
         signal
@@ -794,6 +887,33 @@ export class HarnessRunner {
         };
       }
     }
+    if (emptyBootstrap && this.isExcludedToolDecision(response.decision, emptyExcludedTools)) {
+      checkpoint = this.saveRunCheckpoint(
+        checkpoint,
+        this.dependencies.budgetManager.recordModelUsage(checkpoint.state, response.usage)
+      );
+      this.dependencies.budgetManager.assertWithin(checkpoint.state);
+      response = await this.requestDecision(
+        decisionRequest(
+          checkpoint.state,
+          'Correction 1 of 1: the workspace is authoritatively empty, so the previous tool cannot add information or modify an existing file. Do not inspect or patch the repository. Return write_file to create the first essential scaffold file, PLAN_UPDATE if the active outcome has changed, or ASK_USER only for a genuinely missing requirement.'
+        ),
+        signal
+      );
+      this.assertDecision(response.decision);
+      if (this.isExcludedToolDecision(response.decision, emptyExcludedTools)) {
+        throw new AppError(
+          'MODEL_ERROR',
+          'Empty project bootstrap paused because the model repeatedly selected a tool unavailable before the first file is created',
+          {
+            category: 'NO_PROGRESS',
+            toolName:
+              response.decision.type === 'TOOL_CALL' ? response.decision.tool.name : undefined
+          },
+          502
+        );
+      }
+    }
     for (
       let correctionAttempt = 1;
       correctionAttempt <= 2 && this.isRejectedCompletion(checkpoint.state, response.decision);
@@ -805,10 +925,11 @@ export class HarnessRunner {
       );
       this.dependencies.budgetManager.assertWithin(checkpoint.state);
       response = await this.requestDecision(
-        this.planningRequest(
+        decisionRequest(
           checkpoint.state,
-          selection.entries,
-          `Correction ${correctionAttempt} of 2: the previous COMPLETE decision was rejected because verification or completion conditions are not satisfied. You MUST NOT return COMPLETE. Inspect the latest failed verification result and make a real fix with read_file/apply_patch/write_file, or return VERIFY with a literal allowlisted command.`
+          emptyBootstrap
+            ? `Correction ${correctionAttempt} of 2: COMPLETE was rejected because this creation task has not produced files and satisfied verification. You MUST NOT return COMPLETE or inspect the empty repository. Create the first essential scaffold file with write_file now.`
+            : `Correction ${correctionAttempt} of 2: the previous COMPLETE decision was rejected because verification or completion conditions are not satisfied. You MUST NOT return COMPLETE. Inspect the latest failed verification result and make a real fix with read_file/apply_patch/write_file, or return VERIFY with a literal allowlisted command.`
         ),
         signal
       );
@@ -824,23 +945,21 @@ export class HarnessRunner {
     }
     if (
       recoveryInstruction &&
-      this.isExcludedRecoveryDecision(response.decision, recoveryExcludedTools)
+      this.isExcludedToolDecision(response.decision, recoveryExcludedTools)
     ) {
       checkpoint = this.saveRunCheckpoint(
         checkpoint,
         this.dependencies.budgetManager.recordModelUsage(checkpoint.state, response.usage)
       );
       response = await this.requestDecision(
-        this.planningRequest(
+        decisionRequest(
           checkpoint.state,
-          selection.entries,
-          `${recoveryInstruction} The previous decision selected a tool that is unavailable in this recovery state. Return apply_patch, write_file, VERIFY, or PLAN_UPDATE now.`,
-          recoveryExcludedTools
+          'The previous decision selected a tool that is unavailable in this recovery state. Return apply_patch, write_file, VERIFY, or PLAN_UPDATE now.'
         ),
         signal
       );
       this.assertDecision(response.decision);
-      if (this.isExcludedRecoveryDecision(response.decision, recoveryExcludedTools)) {
+      if (this.isExcludedToolDecision(response.decision, recoveryExcludedTools)) {
         throw new AppError(
           'MODEL_ERROR',
           'Model selected a read-only tool that is unavailable during patch recovery',
@@ -853,93 +972,176 @@ export class HarnessRunner {
         );
       }
     }
+    let readRecoveryExhausted = false;
+    const repeatedResults: ToolCallRecord[] = [];
     for (
       let correctionAttempt = 1;
-      correctionAttempt <= 1 &&
-      this.isRepeatedReadDecision(task.id, checkpoint.state, response.decision);
+      correctionAttempt <= maxRepeatedReadCorrections;
       correctionAttempt += 1
     ) {
-      const repeatedToolName =
-        response.decision.type === 'TOOL_CALL' ? response.decision.tool.name : undefined;
+      const repeatedCall = this.repeatedSuccessfulReadCall(task.id, response.decision);
+      if (!repeatedCall) break;
+      repeatedResults.push(repeatedCall);
+      const repeatedToolName = repeatedCall.tool.name;
       checkpoint = this.saveRunCheckpoint(
         checkpoint,
         this.dependencies.budgetManager.recordModelUsage(checkpoint.state, response.usage)
       );
       this.dependencies.budgetManager.assertWithin(checkpoint.state);
+      const correctionContext = this.dependencies.contextManager.select([
+        ...repeatedResults.map((call, index) => this.toolResultCandidate(call, 1_000 - index)),
+        ...candidates
+      ]).entries;
+      const excludedTools =
+        correctionAttempt === maxRepeatedReadCorrections
+          ? [...new Set(repeatedResults.map(({ tool }) => tool.name))]
+          : [];
       response = await this.requestDecision(
-        this.planningRequest(
+        decisionRequest(
           checkpoint.state,
-          selection.entries,
-          `Correction ${correctionAttempt} of 1: the requested ${repeatedToolName ?? 'read'} call exactly repeats a successful read whose latest result is already present in TOOL_RESULT context. The workspace has not changed since that read. You MUST NOT request ${repeatedToolName ?? 'that read'} again. Use the existing file content now and return a different decision. If the file is invalid, return apply_patch with a hash and edits that repair it; otherwise verify, update the plan, or complete the next step.`,
-          []
+          correctionAttempt === 1
+            ? `Automatic recovery 1 of ${maxRepeatedReadCorrections}: the requested ${repeatedToolName} call repeats a successful inspection of the unchanged workspace. Its exact cached TOOL_RESULT has been restored at the highest context priority. Use that result and return a different decision; a genuinely different file or unread line range is still allowed.`
+            : `Automatic recovery ${correctionAttempt} of ${maxRepeatedReadCorrections}: cached results for the repeated inspections are present in TOOL_RESULT context, and ${excludedTools.join(', ')} is temporarily unavailable. Make concrete progress now with a different inspection, apply_patch, write_file, PLAN_UPDATE, VERIFY, or COMPLETE.`,
+          excludedTools,
+          correctionContext
         ),
         signal
       );
       this.assertDecision(response.decision);
     }
     if (this.isRepeatedReadDecision(task.id, checkpoint.state, response.decision)) {
-      if (response.decision.type === 'TOOL_CALL' && response.decision.tool.name === 'read_file') {
-        response = {
-          ...response,
-          decision: {
-            type: 'TOOL_CALL',
-            reason: 'Harness fallback: inspect the current workspace diff after repeated reads',
-            tool: { name: 'git_diff', arguments: {} }
-          }
-        };
-      } else {
-        this.assertDecisionProgress(task.id, checkpoint.state, response.decision);
-      }
-    }
-    if (this.isRepeatedReadDecision(task.id, checkpoint.state, response.decision)) {
+      const repeatedCall = this.repeatedSuccessfulReadCall(task.id, response.decision);
+      if (repeatedCall) repeatedResults.push(repeatedCall);
       checkpoint = this.saveRunCheckpoint(
         checkpoint,
         this.dependencies.budgetManager.recordModelUsage(checkpoint.state, response.usage)
       );
       this.dependencies.budgetManager.assertWithin(checkpoint.state);
+      const recoveryContext = this.dependencies.contextManager.select([
+        ...repeatedResults.map((call, index) => this.toolResultCandidate(call, 1_000 - index)),
+        ...candidates
+      ]).entries;
       response = await this.requestDecision(
-        this.planningRequest(
+        decisionRequest(
           checkpoint.state,
-          selection.entries,
-          'The requested inspection exactly repeats a successful call and adds no new information. Do not repeat any tool call with the same arguments. A different file or unread read_file line range is allowed. Use the existing TOOL_RESULT context and return PLAN_UPDATE to advance the current step if its outcome is complete, or return a distinct read, write, patch, or VERIFY decision.',
-          []
+          'Final automatic no-progress recovery: all common inspection tools are temporarily unavailable because their current results are already supplied in TOOL_RESULT context. Do not inspect again. Use the cached evidence and return apply_patch, write_file, PLAN_UPDATE, VERIFY, or COMPLETE.',
+          repeatedInspectionTools,
+          recoveryContext
         ),
         signal
       );
       this.assertDecision(response.decision);
       if (this.isRepeatedReadDecision(task.id, checkpoint.state, response.decision)) {
-        this.assertDecisionProgress(task.id, checkpoint.state, response.decision);
+        checkpoint = this.saveRunCheckpoint(
+          checkpoint,
+          this.dependencies.budgetManager.recordModelUsage(checkpoint.state, response.usage)
+        );
+        this.dependencies.budgetManager.assertWithin(checkpoint.state);
+        readRecoveryExhausted = true;
       }
     }
+    const repeatedWriteResults: ToolCallRecord[] = [];
     for (
       let correctionAttempt = 1;
-      correctionAttempt <= 1 && this.isRepeatedWriteDecision(task.id, response.decision);
+      correctionAttempt <= maxRepeatedReadCorrections;
       correctionAttempt += 1
     ) {
+      const repeatedWrite = this.repeatedWriteCall(task.id, response.decision);
+      if (!repeatedWrite) break;
+      repeatedWriteResults.push(repeatedWrite);
       checkpoint = this.saveRunCheckpoint(
         checkpoint,
         this.dependencies.budgetManager.recordModelUsage(checkpoint.state, response.usage)
       );
       this.dependencies.budgetManager.assertWithin(checkpoint.state);
+      const correctionContext = this.dependencies.contextManager.select([
+        ...repeatedWriteResults.map((call, index) => this.toolResultCandidate(call, 1_000 - index)),
+        ...candidates
+      ]).entries;
       response = await this.requestDecision(
-        this.planningRequest(
+        decisionRequest(
           checkpoint.state,
-          selection.entries,
-          `Correction ${correctionAttempt} of 1: the requested write_file call exactly repeats an earlier write in this task run, including a write that already failed or produced no change. Treat the latest TOOL_RESULT as authoritative. Do not submit the same path, content, and expectedHash again. If the desired content is already present, return git_diff, VERIFY, PLAN_UPDATE, or COMPLETE as appropriate. If the file still needs a change, read it once and return a new write_file with genuinely different content and the current expectedHash.`
+          `Automatic write recovery ${correctionAttempt} of ${maxRepeatedReadCorrections}: the requested write_file exactly repeats an earlier completed write. Its authoritative TOOL_RESULT is restored at highest context priority. Do not submit the same path, content, and expectedHash again. If the desired content is present, advance or verify; otherwise use apply_patch or a genuinely different write based on current content.`,
+          correctionAttempt === maxRepeatedReadCorrections ? ['write_file'] : [],
+          correctionContext
         ),
         signal
       );
       this.assertDecision(response.decision);
     }
     if (this.isRepeatedWriteDecision(task.id, response.decision)) {
-      response = {
-        ...response,
-        decision: {
-          type: 'TOOL_CALL',
-          reason: 'Harness fallback: inspect the current workspace after repeated writes',
-          tool: { name: 'git_diff', arguments: {} }
-        }
-      };
+      const repeatedWrite = this.repeatedWriteCall(task.id, response.decision);
+      if (repeatedWrite) repeatedWriteResults.push(repeatedWrite);
+      checkpoint = this.saveRunCheckpoint(
+        checkpoint,
+        this.dependencies.budgetManager.recordModelUsage(checkpoint.state, response.usage)
+      );
+      this.dependencies.budgetManager.assertWithin(checkpoint.state);
+      const recoveryContext = this.dependencies.contextManager.select([
+        ...repeatedWriteResults.map((call, index) => this.toolResultCandidate(call, 1_000 - index)),
+        ...candidates
+      ]).entries;
+      response = await this.requestDecision(
+        decisionRequest(
+          checkpoint.state,
+          'Final automatic write recovery: write_file is temporarily unavailable because the identical completed result is already supplied. Do not inspect or repeat the write. Use apply_patch, PLAN_UPDATE, VERIFY, or COMPLETE to make progress.',
+          ['write_file'],
+          recoveryContext
+        ),
+        signal
+      );
+      this.assertDecision(response.decision);
+      if (this.isRepeatedWriteDecision(task.id, response.decision)) {
+        checkpoint = this.saveRunCheckpoint(
+          checkpoint,
+          this.dependencies.budgetManager.recordModelUsage(checkpoint.state, response.usage)
+        );
+        this.dependencies.budgetManager.assertWithin(checkpoint.state);
+        throw new AppError(
+          'MODEL_ERROR',
+          'Model repeated the same completed file write without making progress',
+          { category: 'REPEATED_DECISION', toolName: 'write_file' },
+          502
+        );
+      }
+    }
+    let inspectionLoop = this.repeatedInspectionLoop(task.id, response.decision);
+    let inspectionRecoveryRequired = readRecoveryExhausted || inspectionLoop !== undefined;
+    for (
+      let correctionAttempt = 1;
+      correctionAttempt <= maxRepeatedReadCorrections && inspectionRecoveryRequired;
+      correctionAttempt += 1
+    ) {
+      const repeatedCall = this.repeatedSuccessfulReadCall(task.id, response.decision);
+      const evidenceCalls = inspectionLoop?.calls ?? (repeatedCall ? [repeatedCall] : []);
+      checkpoint = this.saveRunCheckpoint(
+        checkpoint,
+        this.dependencies.budgetManager.recordModelUsage(checkpoint.state, response.usage)
+      );
+      this.dependencies.budgetManager.assertWithin(checkpoint.state);
+      response = await this.requestDecision(
+        decisionRequest(
+          checkpoint.state,
+          `Automatic progress guard ${correctionAttempt} of ${maxRepeatedReadCorrections}: the current plan step has exhausted repeated-read recovery after ${inspectionLoop?.callCount ?? evidenceCalls.length + 1} inspection decisions without a write, patch, verification, or plan transition. Do not call list_files, read_file, or git_diff again. Use the supplied TOOL_RESULT evidence and make the next concrete implementation change with write_file or apply_patch, or return PLAN_UPDATE, VERIFY, or COMPLETE if the step is genuinely finished.`,
+          repeatedInspectionTools,
+          this.inspectionLoopContext(evidenceCalls, candidates)
+        ),
+        signal
+      );
+      this.assertDecision(response.decision);
+      inspectionRecoveryRequired = this.isInspectionDecision(response.decision);
+      inspectionLoop = this.repeatedInspectionLoop(task.id, response.decision) ?? inspectionLoop;
+    }
+    if (inspectionRecoveryRequired) {
+      throw new AppError(
+        'MODEL_ERROR',
+        'Model remained in an inspection loop after automatic progress recovery',
+        {
+          category: 'REPEATED_DECISION',
+          toolName: response.decision.type === 'TOOL_CALL' ? response.decision.tool.name : undefined
+        },
+        502
+      );
     }
     checkpoint = this.saveRunCheckpoint(
       checkpoint,
@@ -1356,7 +1558,7 @@ export class HarnessRunner {
   private requiresWorkspaceChange(task: StoredTask): boolean {
     const goal = task.goal.toLocaleLowerCase();
     const englishChangeIntent =
-      /\b(?:fix|refactor|modify|change|update|implement|add|remove|replace|rewrite|patch|repair)\b/.test(
+      /\b(?:fix|refactor|modify|change|update|implement|add|remove|replace|rewrite|patch|repair|create|build|scaffold|develop|generate)\b/.test(
         goal
       );
     const chineseChangeIntent = [
@@ -1373,6 +1575,14 @@ export class HarnessRunner {
       '改动',
       '添加',
       '增加',
+      '创建',
+      '搭建',
+      '开发',
+      '编写',
+      '生成',
+      '制作',
+      '构建',
+      '新建',
       '加注释',
       '注释'
     ].some((indicator) => goal.includes(indicator));
@@ -1611,6 +1821,19 @@ export class HarnessRunner {
     return category === 'INTERRUPTED_TOOL' || category === 'PRECHECK_DIRTY';
   }
 
+  private userFacingErrorMessage(error: AppError): string {
+    if (error.code !== 'MODEL_ERROR' || typeof error.details !== 'object' || !error.details) {
+      return error.message;
+    }
+    const details = error.details as { category?: unknown; cause?: unknown };
+    if (typeof details.cause !== 'string' || !details.cause.trim()) return error.message;
+    const category = typeof details.category === 'string' ? details.category : 'PROVIDER';
+    const cause = safeModelDiagnostic(details.cause);
+    return error.message.includes(cause)
+      ? error.message
+      : `${error.message} (${category}: ${cause})`;
+  }
+
   private isInvalidVerificationDecision(error: unknown, decision: ModelDecision): boolean {
     if (!(error instanceof AppError) || decision.type !== 'VERIFY') return false;
     if (typeof error.details !== 'object' || error.details === null) return false;
@@ -1649,19 +1872,6 @@ export class HarnessRunner {
         }
       }
     }
-  }
-
-  private assertDecisionProgress(taskId: string, state: RunState, decision: ModelDecision): void {
-    if (!this.isRepeatedReadDecision(taskId, state, decision)) return;
-    throw new AppError(
-      'MODEL_ERROR',
-      'Model repeated the same successful tool call without making progress',
-      {
-        category: 'REPEATED_DECISION',
-        toolName: decision.type === 'TOOL_CALL' ? decision.tool.name : undefined
-      },
-      502
-    );
   }
 
   private verificationFallback(plan?: TaskPlan): string {
@@ -1793,7 +2003,7 @@ export class HarnessRunner {
       .some(({ tool, result }) => tool.name === 'read_file' && result?.status === 'SUCCEEDED');
   }
 
-  private isExcludedRecoveryDecision(
+  private isExcludedToolDecision(
     decision: ModelDecision,
     excludedTools: readonly ToolCall['name'][]
   ): boolean {
@@ -1815,31 +2025,123 @@ export class HarnessRunner {
     _state: RunState,
     decision: ModelDecision
   ): boolean {
+    return this.repeatedSuccessfulReadCall(taskId, decision) !== undefined;
+  }
+
+  private repeatedSuccessfulReadCall(
+    taskId: string,
+    decision: ModelDecision
+  ): ToolCallRecord | undefined {
     if (
       decision.type !== 'TOOL_CALL' ||
       !['list_files', 'read_file', 'git_diff'].includes(decision.tool.name)
     ) {
-      return false;
+      return undefined;
     }
 
     const successfulCalls = this.currentRunCompletedToolCalls(taskId).filter(
       (call) => call.status === 'SUCCEEDED'
     );
+    const decisionKey = this.readDecisionKey(decision.tool);
     const reverseIndex = [...successfulCalls]
       .reverse()
       .findIndex(
         (call) =>
-          call.tool.name === decision.tool.name &&
-          JSON.stringify(call.tool.arguments) === JSON.stringify(decision.tool.arguments)
+          call.tool.name === decision.tool.name && this.readDecisionKey(call.tool) === decisionKey
       );
     const matchingIndex = reverseIndex < 0 ? -1 : successfulCalls.length - reverseIndex - 1;
-    if (matchingIndex < 0) return false;
+    if (matchingIndex < 0) return undefined;
 
     // A successful workspace write invalidates earlier reads, so rereading
     // after a change remains valid and gives the model fresh context.
-    return !successfulCalls
+    const workspaceChanged = successfulCalls
       .slice(matchingIndex + 1)
       .some(({ result }) => (result?.affectedFiles?.length ?? 0) > 0);
+    return workspaceChanged ? undefined : successfulCalls[matchingIndex];
+  }
+
+  private repeatedInspectionLoop(
+    taskId: string,
+    decision: ModelDecision
+  ): { calls: ToolCallRecord[]; callCount: number } | undefined {
+    if (decision.type !== 'TOOL_CALL' || !this.isInspectionTool(decision.tool.name)) {
+      return undefined;
+    }
+    const recent: ToolCallRecord[] = [];
+    for (const call of [...this.dependencies.database.getToolCalls(taskId)].reverse()) {
+      if (
+        call.status !== 'SUCCEEDED' ||
+        call.result?.status !== 'SUCCEEDED' ||
+        !this.isInspectionTool(call.tool.name)
+      ) {
+        break;
+      }
+      recent.unshift(call);
+    }
+    const targets = [
+      ...recent.map(({ tool }) => this.inspectionTargetKey(tool)),
+      this.inspectionTargetKey(decision.tool)
+    ];
+    if (targets.length < inspectionLoopThreshold) return undefined;
+    const repeatedTargetCount = targets.length - new Set(targets).size;
+    if (repeatedTargetCount === 0) return undefined;
+    return { calls: recent, callCount: targets.length };
+  }
+
+  private inspectionTargetKey(tool: ToolCall): string {
+    if (tool.name === 'read_file' || tool.name === 'list_files') {
+      return `${tool.name}:${String(tool.arguments.path ?? '')}`;
+    }
+    return tool.name;
+  }
+
+  private isInspectionTool(name: ToolCall['name']): boolean {
+    return (repeatedInspectionTools as readonly string[]).includes(name);
+  }
+
+  private isInspectionDecision(decision: ModelDecision): boolean {
+    return decision.type === 'TOOL_CALL' && this.isInspectionTool(decision.tool.name);
+  }
+
+  private inspectionLoopContext(
+    calls: readonly ToolCallRecord[],
+    candidates: readonly ContextCandidate[]
+  ): readonly SelectedContext[] {
+    const seen = new Set<string>();
+    const results = [...calls]
+      .reverse()
+      .filter((call) => {
+        const key = this.inspectionTargetKey(call.tool);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .slice(0, 8)
+      .map((call, index) => this.toolResultCandidate(call, 1_200 - index));
+    return this.dependencies.contextManager.select([...results, ...candidates]).entries;
+  }
+
+  private readDecisionKey(tool: ToolCall): string {
+    if (tool.name !== 'read_file') return this.toolArgumentsKey(tool.arguments);
+    return this.toolArgumentsKey({
+      path: tool.arguments.path,
+      startLine: tool.arguments.startLine ?? 1,
+      maxLines: tool.arguments.maxLines ?? 200
+    });
+  }
+
+  private toolArgumentsKey(arguments_: Record<string, unknown>): string {
+    return JSON.stringify(this.sortedJsonValue(arguments_));
+  }
+
+  private sortedJsonValue(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map((item) => this.sortedJsonValue(item));
+    if (!value || typeof value !== 'object') return value;
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, this.sortedJsonValue(item)])
+    );
   }
 
   private advanceRepeatedFileRead(
@@ -1896,7 +2198,11 @@ export class HarnessRunner {
   }
 
   private isRepeatedWriteDecision(taskId: string, decision: ModelDecision): boolean {
-    if (decision.type !== 'TOOL_CALL' || decision.tool.name !== 'write_file') return false;
+    return this.repeatedWriteCall(taskId, decision) !== undefined;
+  }
+
+  private repeatedWriteCall(taskId: string, decision: ModelDecision): ToolCallRecord | undefined {
+    if (decision.type !== 'TOOL_CALL' || decision.tool.name !== 'write_file') return undefined;
 
     const calls = this.currentRunCompletedToolCalls(taskId);
     const reverseIndex = [...calls]
@@ -1904,19 +2210,24 @@ export class HarnessRunner {
       .findIndex(
         (call) =>
           call.tool.name === 'write_file' &&
-          JSON.stringify(call.tool.arguments) === JSON.stringify(decision.tool.arguments)
+          this.toolArgumentsKey(call.tool.arguments) ===
+            this.toolArgumentsKey(decision.tool.arguments)
       );
     const matchingIndex = reverseIndex < 0 ? -1 : calls.length - reverseIndex - 1;
-    if (matchingIndex < 0) return false;
+    if (matchingIndex < 0) return undefined;
 
     // As with reads, a later successful workspace write invalidates the earlier
     // decision context; only repeat while the workspace has not changed.
-    return !calls
+    const workspaceChanged = calls
       .slice(matchingIndex + 1)
       .some(({ result }) => (result?.affectedFiles?.length ?? 0) > 0);
+    return workspaceChanged ? undefined : calls[matchingIndex];
   }
 
-  private async plan(task: StoredTask, signal?: AbortSignal): Promise<TaskPlan> {
+  private async plan(
+    task: StoredTask,
+    signal?: AbortSignal
+  ): Promise<Extract<ModelDecision, { type: 'PLAN_UPDATE' | 'ASK_USER' }>> {
     const controlledSignal = signal ?? new AbortController().signal;
     let checkpoint = this.ensureRunCheckpoint(task);
     this.dependencies.budgetManager.assertDuration(checkpoint.startedAt, checkpoint.state.budget);
@@ -1939,8 +2250,14 @@ export class HarnessRunner {
       checkpoint,
       this.dependencies.budgetManager.reserveStep(checkpoint.state)
     );
+    const emptyBootstrap = this.isEmptyProjectBootstrap(task, overview, checkpoint.state);
     const response = await this.requestDecision(
-      this.planningRequest(checkpoint.state, selection.entries),
+      this.planningRequest(
+        checkpoint.state,
+        selection.entries,
+        emptyBootstrap ? emptyProjectInstruction : undefined,
+        emptyBootstrap ? emptyProjectUnavailableTools : []
+      ),
       controlledSignal
     );
     this.assertDecision(response.decision);
@@ -1951,6 +2268,7 @@ export class HarnessRunner {
     this.dependencies.budgetManager.assertWithin(checkpoint.state);
     this.dependencies.budgetManager.assertDuration(checkpoint.startedAt, checkpoint.state.budget);
     this.throwIfStopped(task.id, signal);
+    if (response.decision.type === 'ASK_USER') return response.decision;
     if (response.decision.type !== 'PLAN_UPDATE') {
       throw new AppError(
         'MODEL_ERROR',
@@ -1960,7 +2278,33 @@ export class HarnessRunner {
       );
     }
     this.assertPlan(response.decision.plan);
-    return response.decision.plan;
+    return response.decision;
+  }
+
+  private isEmptyProjectBootstrap(
+    task: StoredTask,
+    overview: ProjectOverview,
+    state: RunState
+  ): boolean {
+    if (state.changedFiles.length > 0) return false;
+    if (overview.indexedFiles > 0 || overview.entryFiles.length > 0) return false;
+    const metadata = this.dependencies.database.getProject(task.projectId)?.sourceMetadata;
+    return metadata ? metadata.fileCount === 0 : true;
+  }
+
+  private combineHarnessInstructions(
+    ...instructions: Array<string | undefined>
+  ): string | undefined {
+    const combined = instructions.filter((instruction): instruction is string =>
+      Boolean(instruction)
+    );
+    return combined.length > 0 ? combined.join(' ') : undefined;
+  }
+
+  private combineExcludedTools(
+    ...groups: Array<readonly ToolCall['name'][]>
+  ): readonly ToolCall['name'][] {
+    return [...new Set(groups.flat())];
   }
 
   private planningRequest(
@@ -1970,12 +2314,23 @@ export class HarnessRunner {
     excludedTools: readonly ToolCall['name'][] = []
   ) {
     return {
-      runState: state,
+      runState: this.modelRunState({
+        ...state,
+        contextRefs: context.map(({ reference }) => reference)
+      }),
       context,
       availableTools: this.dependencies.tools
         .definitions()
         .filter(({ name }) => name !== 'run_command' && !excludedTools.includes(name)),
       harnessInstruction
+    };
+  }
+
+  private modelRunState(state: RunState): RunState {
+    return {
+      ...state,
+      toolCallIds: state.toolCallIds.slice(-12),
+      verificationResultIds: state.verificationResultIds.slice(-12)
     };
   }
 
@@ -2242,31 +2597,40 @@ export class HarnessRunner {
         priority: 60 + index
       });
     });
-    const recentToolCalls = this.dependencies.database
-      .getToolCalls(task.id)
-      .filter(({ result }) => result !== undefined)
-      .slice(-4);
+    const recentToolCalls: ToolCallRecord[] = [];
     const seenToolResults = new Set<string>();
-    recentToolCalls.reverse().forEach((call, index) => {
-      const dedupeKey = `${call.tool.name}:${JSON.stringify(call.tool.arguments)}`;
-      if (seenToolResults.has(dedupeKey)) return;
+    for (const call of this.dependencies.database.getToolCalls(task.id).reverse()) {
+      if (!call.result) continue;
+      const dedupeKey = `${call.tool.name}:${
+        ['list_files', 'read_file', 'git_diff'].includes(call.tool.name)
+          ? this.readDecisionKey(call.tool)
+          : JSON.stringify(call.tool.arguments)
+      }`;
+      if (seenToolResults.has(dedupeKey)) continue;
       seenToolResults.add(dedupeKey);
-      const chronologicalIndex = recentToolCalls.length - index - 1;
-      candidates.push({
-        reference: {
-          ref: `tool-call:${call.id}:result`,
-          kind: 'TOOL_RESULT',
-          source: call.tool.name
-        },
-        content: [
-          `Completed tool call: ${call.tool.name}`,
-          `Arguments: ${JSON.stringify(call.tool.arguments)}`,
-          `Observation: ${JSON.stringify(this.contextToolResult(call.result!))}`
-        ].join('\n'),
-        priority: 95 + chronologicalIndex
-      });
-    });
+      recentToolCalls.unshift(call);
+      if (recentToolCalls.length >= 4) break;
+    }
+    recentToolCalls.forEach((call, index) =>
+      candidates.push(this.toolResultCandidate(call, 95 + index))
+    );
     return candidates;
+  }
+
+  private toolResultCandidate(call: ToolCallRecord, priority: number): ContextCandidate {
+    return {
+      reference: {
+        ref: `tool-call:${call.id}:result`,
+        kind: 'TOOL_RESULT',
+        source: call.tool.name
+      },
+      content: [
+        `Completed tool call: ${call.tool.name}`,
+        `Arguments: ${JSON.stringify(call.tool.arguments)}`,
+        `Observation: ${JSON.stringify(this.contextToolResult(call.result!))}`
+      ].join('\n'),
+      priority
+    };
   }
 
   private requireTask(taskId: string): StoredTask {

@@ -13,6 +13,33 @@ interface ProjectRow {
   createdAt: string;
 }
 
+const sourceSkipReasons = new Set([
+  'OVERSIZED_ARTIFACT',
+  'ARTIFACT_BYTE_BUDGET',
+  'ARTIFACT_FILE_BUDGET'
+]);
+
+function isOptionalNonNegativeInteger(value: unknown): boolean {
+  return value === undefined || (Number.isSafeInteger(value) && (value as number) >= 0);
+}
+
+function isValidSkippedFiles(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!Array.isArray(value) || value.length > 100) return false;
+  return value.every((item) => {
+    if (typeof item !== 'object' || item === null) return false;
+    const candidate = item as Record<string, unknown>;
+    return (
+      typeof candidate.path === 'string' &&
+      candidate.path.length > 0 &&
+      Number.isSafeInteger(candidate.size) &&
+      (candidate.size as number) >= 0 &&
+      typeof candidate.reason === 'string' &&
+      sourceSkipReasons.has(candidate.reason)
+    );
+  });
+}
+
 function parseSourceMetadata(raw: string): SourceMetadata {
   const value = parseStoredJson<unknown>(raw, 'project.sourceMetadata');
   if (typeof value !== 'object' || value === null) {
@@ -36,6 +63,9 @@ function parseSourceMetadata(raw: string): SourceMetadata {
     (candidate.fileCount as number) < 0 ||
     !Number.isSafeInteger(candidate.totalBytes) ||
     (candidate.totalBytes as number) < 0 ||
+    !isOptionalNonNegativeInteger(candidate.skippedFileCount) ||
+    !isOptionalNonNegativeInteger(candidate.skippedBytes) ||
+    !isValidSkippedFiles(candidate.skippedFiles) ||
     typeof candidate.manifestHash !== 'string' ||
     !/^[0-9a-f]{64}$/.test(candidate.manifestHash) ||
     !git ||
@@ -73,6 +103,16 @@ export class ProjectRepository {
           : null,
         record.createdAt
       );
+  }
+
+  updateSourceMetadata(id: string, sourceMetadata: SourceMetadata): ProjectRecord {
+    const result = this.database
+      .prepare('UPDATE projects SET source_metadata_json = ? WHERE id = ?')
+      .run(stringifyStoredJson(sourceMetadata, 'project.sourceMetadata'), id);
+    if (result.changes !== 1) {
+      throw new AppError('NOT_FOUND', 'Project not found', { projectId: id }, 404);
+    }
+    return this.findById(id)!;
   }
 
   findById(id: string): ProjectRecord | undefined {

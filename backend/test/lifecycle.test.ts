@@ -352,6 +352,7 @@ interface Fixture {
   task: StoredTask;
   tools: BlockingTools;
   source: string;
+  workspaceManager: WorkspaceManager;
 }
 
 interface FixtureOptions {
@@ -360,6 +361,8 @@ interface FixtureOptions {
   blockFirstList?: boolean;
   tools?: BlockingTools;
   goal?: string;
+  emptySource?: boolean;
+  indexedFiles?: number;
 }
 
 function defaultBudgetManager(): BudgetManager {
@@ -401,7 +404,7 @@ async function fixture(options: FixtureOptions = {}): Promise<Fixture> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codeharness-lifecycle-'));
   const source = path.join(root, 'source');
   await fs.mkdir(source);
-  await fs.writeFile(path.join(source, 'README.md'), '# Fixture\n');
+  if (!options.emptySource) await fs.writeFile(path.join(source, 'README.md'), '# Fixture\n');
   const database = new AppDatabase(path.join(root, 'test.sqlite'));
   const workspaceManager = new WorkspaceManager({ root: path.join(root, 'workspaces') });
   const projectId = randomUUID();
@@ -431,11 +434,11 @@ async function fixture(options: FixtureOptions = {}): Promise<Fixture> {
     codeIndex: new FakeCodeIndex({
       overview: {
         projectId,
-        languages: ['Markdown'],
+        languages: options.emptySource ? [] : ['Markdown'],
         entryFiles: [],
         testFiles: [],
         buildCommands: [],
-        indexedFiles: 1,
+        indexedFiles: options.indexedFiles ?? (options.emptySource ? 0 : 1),
         degraded: true
       }
     }),
@@ -457,7 +460,7 @@ async function fixture(options: FixtureOptions = {}): Promise<Fixture> {
     database.close();
     await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   });
-  return { database, harness, scheduler, task, tools, source };
+  return { database, harness, scheduler, task, tools, source, workspaceManager };
 }
 
 function stateEvent(
@@ -478,6 +481,73 @@ const plannedTask: TaskPlan = {
   steps: [{ id: 'inspect', title: 'Inspect fixture', status: 'PENDING' }],
   verification: ['node --version']
 };
+
+const campusEatsGoal =
+  'Create a runnable CampusEats campus food delivery MVP in an empty workspace. Implement student and merchant authentication, store and menu browsing, a single-store cart, server-side price calculation, order creation and ownership checks, legal order state transitions, menu availability, seed accounts and data, a frontend student and merchant workflow, backend API tests, and README setup instructions. Keep the project small and dependency-light.';
+
+const campusEatsGeneratedFiles = [
+  ['README.md', '# CampusEats\n\nRun the API and frontend with the documented seed accounts.\n'],
+  [
+    'package.json',
+    '{"name":"campus-eats","private":true,"scripts":{"dev":"node backend/server.js","test":"node --test backend/test/campus-eats.test.js"}}\n'
+  ],
+  [
+    'backend/server.js',
+    "import http from 'node:http';\nimport { createApp } from './routes.js';\n\nhttp.createServer(createApp()).listen(3000);\n"
+  ],
+  [
+    'backend/auth.js',
+    'export function authenticate(user) {\n  return user?.id && user.role ? { id: user.id, role: user.role } : null;\n}\n'
+  ],
+  [
+    'backend/database.js',
+    'export const users = new Map();\nexport const stores = new Map();\nexport const orders = new Map();\n'
+  ],
+  [
+    'backend/stores.js',
+    'export function listOpenStores(stores) {\n  return [...stores.values()].filter((store) => store.isOpen);\n}\n'
+  ],
+  [
+    'backend/orders.js',
+    "export const transitions = { pending: ['accepted', 'rejected', 'cancelled'], accepted: ['preparing'], preparing: ['delivering'], delivering: ['completed'] };\n\nexport function calculateTotal(items, menu) {\n  return items.reduce((total, item) => total + menu.get(item.menuItemId).price * item.quantity, 0);\n}\n"
+  ],
+  [
+    'backend/seed.js',
+    "export const seedAccounts = [{ username: 'student@example.com', role: 'student' }, { username: 'merchant@example.com', role: 'merchant' }];\n"
+  ],
+  [
+    'backend/routes.js',
+    "export function createApp() {\n  return (_request, response) => {\n    response.writeHead(200, { 'content-type': 'application/json' });\n    response.end(JSON.stringify({ service: 'CampusEats' }));\n  };\n}\n"
+  ],
+  [
+    'backend/test/campus-eats.test.js',
+    "import test from 'node:test';\nimport assert from 'node:assert/strict';\n\ntest('CampusEats acceptance scaffold is available', () => {\n  assert.equal(typeof 'student@example.com', 'string');\n});\n"
+  ],
+  [
+    'frontend/index.html',
+    '<!doctype html>\n<html><body><div id="root"></div><script type="module" src="/src/main.js"></script></body></html>\n'
+  ],
+  [
+    'frontend/src/main.js',
+    "import { loadStores } from './api.js';\n\nloadStores().then((stores) => {\n  document.querySelector('#root').textContent = `${stores.length} stores`;\n});\n"
+  ],
+  [
+    'frontend/src/api.js',
+    "export async function loadStores() {\n  const response = await fetch('/api/stores');\n  if (!response.ok) throw new Error('Unable to load stores');\n  return response.json();\n}\n"
+  ],
+  [
+    'frontend/src/state.js',
+    'export const cart = { storeId: null, items: [] };\nexport function clearCart() { cart.storeId = null; cart.items = []; }\n'
+  ],
+  [
+    'frontend/src/student.js',
+    "export function canCancel(order) {\n  return order.status === 'pending';\n}\n"
+  ],
+  [
+    'frontend/src/merchant.js',
+    "export function nextStatuses(status) {\n  return { pending: ['accepted', 'rejected'], accepted: ['preparing'], preparing: ['delivering'], delivering: ['completed'] }[status] ?? [];\n}\n"
+  ]
+] as const;
 
 function changeDecisions(filePath = 'generated.txt') {
   return [
@@ -684,6 +754,188 @@ describe('task lifecycle scheduler', () => {
     });
     expect(database.getTaskLease(task.id)).toBeUndefined();
     expect(tools.calls).toEqual([]);
+  });
+
+  it('treats ASK_USER during empty-project planning as a normal waiting state', async () => {
+    const question = {
+      type: 'ASK_USER' as const,
+      reason: 'The project requirements are underspecified',
+      question: 'Which frontend framework and backend runtime should be used?'
+    };
+    const { database, scheduler, task, tools } = await fixture({
+      emptySource: true,
+      goal: '你好',
+      modelGateway: new FakeModelGateway([question])
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)).toMatchObject({
+      status: 'WAITING_USER',
+      resumeStatus: 'PLANNING',
+      stopReason: question.question
+    });
+    expect(tools.calls).toEqual([]);
+  });
+
+  it('bootstraps an empty project without repository inspection loops', async () => {
+    const requests: DecisionRequest[] = [];
+    const plan: TaskPlan = {
+      goal: 'Create a frontend/backend project',
+      assumptions: ['Use a minimal dependency-light scaffold'],
+      steps: [
+        { id: 'scaffold', title: 'Create the separated application scaffold', status: 'PENDING' }
+      ],
+      verification: ['git diff --check']
+    };
+    const decisions = [
+      { type: 'PLAN_UPDATE' as const, reason: 'Plan the scaffold', plan },
+      {
+        type: 'TOOL_CALL' as const,
+        reason: 'Inspect before creating',
+        tool: { name: 'list_files' as const, arguments: { path: '.' } }
+      },
+      {
+        type: 'TOOL_CALL' as const,
+        reason: 'Create the package manifest',
+        tool: {
+          name: 'write_file' as const,
+          arguments: {
+            path: 'package.json',
+            content: '{"scripts":{"dev":"npm run dev:backend"}}\n'
+          }
+        }
+      },
+      {
+        type: 'TOOL_CALL' as const,
+        reason: 'Create the frontend entry',
+        tool: {
+          name: 'write_file' as const,
+          arguments: { path: 'frontend/src/main.ts', content: 'export const app = {}\n' }
+        }
+      },
+      {
+        type: 'TOOL_CALL' as const,
+        reason: 'Create the backend entry',
+        tool: {
+          name: 'write_file' as const,
+          arguments: { path: 'backend/src/server.ts', content: 'export const server = {}\n' }
+        }
+      },
+      {
+        type: 'VERIFY' as const,
+        reason: 'Check the generated diff',
+        commands: ['git diff --check']
+      },
+      {
+        type: 'COMPLETE' as const,
+        reason: 'Scaffold is ready',
+        summary: 'Created the frontend/backend scaffold'
+      }
+    ];
+    const modelGateway = new FakeModelGateway((request, index) => {
+      requests.push(structuredClone(request));
+      const decision = decisions[index];
+      if (!decision) throw new Error(`Unexpected model request ${index}`);
+      return decision;
+    });
+    const tools = new ReadingAndWritingTools();
+    const { database, scheduler, task } = await fixture({
+      emptySource: true,
+      goal: 'Create a frontend/backend project',
+      tools,
+      modelGateway
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(database.getFileChanges(task.id).map(({ path: filePath }) => filePath)).toEqual(
+      expect.arrayContaining(['package.json', 'frontend/src/main.ts', 'backend/src/server.ts'])
+    );
+    expect(tools.calls.some(({ name }) => name === 'list_files' || name === 'read_file')).toBe(
+      false
+    );
+    expect(requests[0]?.availableTools.map(({ name }) => name)).toEqual(['write_file']);
+    expect(requests[2]?.availableTools.map(({ name }) => name)).toEqual(['write_file']);
+  });
+
+  it('pauses after one correction when an empty project keeps requesting inspection', async () => {
+    const plan: TaskPlan = {
+      goal: 'Build a frontend/backend project',
+      assumptions: [],
+      steps: [{ id: 'scaffold', title: 'Create the scaffold', status: 'PENDING' }],
+      verification: ['git diff --check']
+    };
+    const { database, scheduler, task, tools } = await fixture({
+      emptySource: true,
+      goal: 'Build a frontend/backend project',
+      modelGateway: new FakeModelGateway([
+        { type: 'PLAN_UPDATE', reason: 'Plan the scaffold', plan },
+        {
+          type: 'TOOL_CALL',
+          reason: 'Inspect the empty project',
+          tool: { name: 'list_files', arguments: { path: '.' } }
+        },
+        {
+          type: 'TOOL_CALL',
+          reason: 'Try inspection again',
+          tool: { name: 'read_file', arguments: { path: 'README.md' } }
+        }
+      ])
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)).toMatchObject({
+      status: 'WAITING_USER',
+      resumeStatus: 'EXECUTING',
+      stopReason:
+        'Empty project bootstrap paused because the model repeatedly selected a tool unavailable before the first file is created'
+    });
+    expect(tools.calls).toEqual([]);
+    expect(database.getTaskRun(task.id)?.state.budget.usedToolCalls).toBe(0);
+  });
+
+  it('does not use stale zero-file metadata when the live index already contains files', async () => {
+    const requests: DecisionRequest[] = [];
+    const plan: TaskPlan = {
+      goal: 'Continue editing the generated project',
+      assumptions: [],
+      steps: [{ id: 'inspect', title: 'Inspect generated files', status: 'PENDING' }],
+      verification: ['git diff --check']
+    };
+    const modelGateway = new FakeModelGateway((request, index) => {
+      requests.push(structuredClone(request));
+      return index === 0
+        ? { type: 'PLAN_UPDATE', reason: 'Plan the next iteration', plan }
+        : {
+            type: 'ASK_USER',
+            reason: 'Stop after proving normal tool availability',
+            question: 'Which generated file should be changed next?'
+          };
+    });
+    const tools = new ReadingAndWritingTools();
+    const { database, scheduler, task } = await fixture({
+      emptySource: true,
+      indexedFiles: 1,
+      tools,
+      modelGateway
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getProject(task.projectId)?.sourceMetadata?.fileCount).toBe(0);
+    expect(database.getTask(task.id)?.status).toBe('WAITING_USER');
+    expect(requests[0]?.availableTools.map(({ name }) => name)).toEqual([
+      'read_file',
+      'write_file'
+    ]);
+    expect(requests[0]?.harnessInstruction).toBeUndefined();
   });
 
   it('summarizes older history in persisted batches and reloads bounded context', async () => {
@@ -924,38 +1176,54 @@ describe('task lifecycle scheduler', () => {
     });
   });
 
-  it('stops a repeated successful tool decision instead of looping', async () => {
+  it('recovers from repeated successful inspections without user intervention', async () => {
     const repeated = {
       type: 'TOOL_CALL' as const,
       reason: 'Read the same file again',
       tool: { name: 'list_files' as const, arguments: { path: '.' } }
     };
+    const requests: DecisionRequest[] = [];
     const { database, scheduler, task } = await fixture({
       blockFirstList: false,
-      modelGateway: new FakeModelGateway([
-        { type: 'PLAN_UPDATE', reason: 'Inspect files', plan: plannedTask },
-        repeated,
-        repeated,
-        repeated,
-        repeated,
-        repeated,
-        repeated
-      ])
+      modelGateway: new FakeModelGateway((request, index) => {
+        requests.push(structuredClone(request));
+        return [
+          { type: 'PLAN_UPDATE' as const, reason: 'Inspect files', plan: plannedTask },
+          repeated,
+          repeated,
+          repeated,
+          repeated,
+          {
+            type: 'VERIFY' as const,
+            reason: 'Use the cached inspection and verify',
+            commands: ['node --version']
+          },
+          { type: 'COMPLETE' as const, reason: 'Done', summary: 'Inspection complete' }
+        ][index]!;
+      })
     });
 
     scheduler.start(task.id);
     await scheduler.waitForIdle(task.id);
 
-    expect(database.getTask(task.id)).toMatchObject({
-      status: 'WAITING_USER',
-      stopReason: 'Model repeated the same successful tool call without making progress'
-    });
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
     expect(
       database.getToolCalls(task.id).filter(({ tool }) => tool.name === 'list_files')
     ).toHaveLength(1);
+    const firstRecovery = requests.find(({ harnessInstruction }) =>
+      harnessInstruction?.includes('Automatic recovery 1')
+    );
+    expect(
+      firstRecovery?.context.some(
+        ({ reference, content }) =>
+          reference.kind === 'TOOL_RESULT' &&
+          reference.source === 'list_files' &&
+          content.includes('Completed tool call: list_files')
+      )
+    ).toBe(true);
   });
 
-  it('stops a repeated read after a reused result instead of exhausting read budget', async () => {
+  it('recovers a repeated read after a reused result without exhausting read budget', async () => {
     const read = {
       type: 'TOOL_CALL' as const,
       reason: 'Read the parser again',
@@ -976,7 +1244,6 @@ describe('task lifecycle scheduler', () => {
         read,
         read,
         read,
-        read,
         { type: 'VERIFY', reason: 'Verify the workspace diff', commands: ['node --version'] },
         { type: 'COMPLETE', reason: 'Done', summary: 'Inspection complete' }
       ])
@@ -989,7 +1256,7 @@ describe('task lifecycle scheduler', () => {
     expect(
       database.getToolCalls(task.id).filter(({ tool }) => tool.name === 'read_file')
     ).toHaveLength(1);
-    expect(database.getToolCalls(task.id).some(({ tool }) => tool.name === 'git_diff')).toBe(true);
+    expect(database.getToolCalls(task.id).some(({ tool }) => tool.name === 'git_diff')).toBe(false);
   });
 
   it('corrects one repeated read and continues without user intervention', async () => {
@@ -1062,7 +1329,7 @@ describe('task lifecycle scheduler', () => {
 
     expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
     const correctionRequest = requests.find(({ harnessInstruction }) =>
-      harnessInstruction?.includes('exactly repeats a successful read')
+      harnessInstruction?.includes('Automatic recovery 1')
     );
     expect(correctionRequest?.availableTools.some(({ name }) => name === 'read_file')).toBe(true);
     expect(
@@ -1071,6 +1338,133 @@ describe('task lifecycle scheduler', () => {
         .filter(({ tool }) => tool.name === 'read_file')
         .map(({ tool }) => tool.arguments)
     ).toEqual([{ path: 'README.md' }, { path: 'package.json' }]);
+  });
+
+  it('treats implicit and explicit default read ranges as the same successful call', async () => {
+    const requests: DecisionRequest[] = [];
+    const { database, scheduler, task } = await fixture({
+      blockFirstList: false,
+      tools: new ReusingReadTools(),
+      modelGateway: new FakeModelGateway((request, index) => {
+        requests.push(structuredClone(request));
+        return [
+          { type: 'PLAN_UPDATE' as const, reason: 'Inspect files', plan: plannedTask },
+          {
+            type: 'TOOL_CALL' as const,
+            reason: 'Read the fixture',
+            tool: { name: 'read_file' as const, arguments: { path: 'README.md' } }
+          },
+          {
+            type: 'TOOL_CALL' as const,
+            reason: 'Read the same default range explicitly',
+            tool: {
+              name: 'read_file' as const,
+              arguments: { path: 'README.md', startLine: 1, maxLines: 200 }
+            }
+          },
+          {
+            type: 'VERIFY' as const,
+            reason: 'Use the cached default range',
+            commands: ['node --version']
+          },
+          { type: 'COMPLETE' as const, reason: 'Done', summary: 'Inspection complete' }
+        ][index]!;
+      })
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(
+      database.getToolCalls(task.id).filter(({ tool }) => tool.name === 'read_file')
+    ).toHaveLength(1);
+    expect(
+      requests.some(({ harnessInstruction }) =>
+        harnessInstruction?.includes('Automatic recovery 1')
+      )
+    ).toBe(true);
+  });
+
+  it('restores an evicted matching tool result during repeated-read recovery', async () => {
+    const requests: DecisionRequest[] = [];
+    const paths = ['README.md', 'package.json', 'src/a.ts', 'src/b.ts', 'src/c.ts'];
+    const decisions = [
+      { type: 'PLAN_UPDATE' as const, reason: 'Inspect files', plan: plannedTask },
+      ...paths.map((filePath) => ({
+        type: 'TOOL_CALL' as const,
+        reason: `Read ${filePath}`,
+        tool: { name: 'read_file' as const, arguments: { path: filePath } }
+      })),
+      {
+        type: 'TOOL_CALL' as const,
+        reason: 'Read the first file again',
+        tool: { name: 'read_file' as const, arguments: { path: 'README.md' } }
+      },
+      {
+        type: 'VERIFY' as const,
+        reason: 'Use the restored cached result',
+        commands: ['node --version']
+      },
+      { type: 'COMPLETE' as const, reason: 'Done', summary: 'Inspection complete' }
+    ];
+    const { database, scheduler, task } = await fixture({
+      blockFirstList: false,
+      tools: new ReusingReadTools(),
+      modelGateway: new FakeModelGateway((request, index) => {
+        requests.push(structuredClone(request));
+        return decisions[index]!;
+      })
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    const recovery = requests.find(({ harnessInstruction }) =>
+      harnessInstruction?.includes('Automatic recovery 1')
+    );
+    expect(
+      recovery?.context.some(
+        ({ reference, content }) =>
+          reference.kind === 'TOOL_RESULT' &&
+          reference.source === 'read_file' &&
+          content.includes('"path":"README.md"')
+      )
+    ).toBe(true);
+  });
+
+  it('bounds historical tool identifiers sent to the decision model', async () => {
+    const requests: DecisionRequest[] = [];
+    const { database, scheduler, task } = await fixture({
+      blockFirstList: false,
+      tools: new ReusingReadTools(),
+      modelGateway: new FakeModelGateway((request, index) => {
+        requests.push(structuredClone(request));
+        if (index === 0) {
+          return { type: 'PLAN_UPDATE', reason: 'Inspect files', plan: plannedTask };
+        }
+        if (index <= 14) {
+          return {
+            type: 'TOOL_CALL',
+            reason: `Read fixture ${index}`,
+            tool: { name: 'read_file', arguments: { path: `fixture-${index}.txt` } }
+          };
+        }
+        return {
+          type: 'ASK_USER',
+          reason: 'Stop after inspecting the bounded request state',
+          question: 'Continue?'
+        };
+      })
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getToolCalls(task.id)).toHaveLength(14);
+    expect(database.getTaskRun(task.id)?.state.toolCallIds).toHaveLength(14);
+    expect(requests.at(-1)?.runState.toolCallIds).toHaveLength(12);
   });
 
   it('continues a paged file read when the model repeats the original request', async () => {
@@ -1112,7 +1506,7 @@ describe('task lifecycle scheduler', () => {
     ).toContain('Harness continuation: read the next unread section of the requested file');
   });
 
-  it('bounds repeated git diff fallbacks and asks the model to advance the workflow', async () => {
+  it('bounds repeated reads without falling into a git diff loop', async () => {
     const read = {
       type: 'TOOL_CALL' as const,
       reason: 'Read the same project file',
@@ -1123,7 +1517,6 @@ describe('task lifecycle scheduler', () => {
       tools: new ReusingReadTools(),
       modelGateway: new FakeModelGateway([
         { type: 'PLAN_UPDATE', reason: 'Inspect files', plan: plannedTask },
-        read,
         read,
         read,
         read,
@@ -1142,7 +1535,7 @@ describe('task lifecycle scheduler', () => {
 
     expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
     expect(tools.calls.filter(({ name }) => name === 'read_file')).toHaveLength(1);
-    expect(tools.calls.filter(({ name }) => name === 'git_diff')).toHaveLength(1);
+    expect(tools.calls.filter(({ name }) => name === 'git_diff')).toHaveLength(0);
     expect(database.getVerificationResults(task.id)).toMatchObject([
       { command: 'node --version', status: 'PASSED' }
     ]);
@@ -1180,6 +1573,155 @@ describe('task lifecycle scheduler', () => {
     expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
     expect(tools.calls.filter(({ name }) => name === 'read_file')).toHaveLength(2);
     expect(database.getTask(task.id)?.stopReason).toBeUndefined();
+  });
+
+  it('breaks a rotating inspection cycle after exact read recovery is exhausted', async () => {
+    const readDecisions = Array.from({ length: 5 }, (_, index) => ({
+      type: 'TOOL_CALL' as const,
+      reason: `Inspect range ${index + 1}`,
+      tool: {
+        name: 'read_file' as const,
+        arguments: { path: 'README.md', startLine: index + 1 }
+      }
+    }));
+    const completedPlan: TaskPlan = {
+      ...structuredClone(plannedTask),
+      steps: plannedTask.steps.map((step) => ({ ...step, status: 'DONE' as const }))
+    };
+    const requests: DecisionRequest[] = [];
+    const { database, scheduler, task } = await fixture({
+      blockFirstList: false,
+      tools: new ReadingAndWritingTools(),
+      modelGateway: new FakeModelGateway((request, index) => {
+        requests.push(structuredClone(request));
+        return [
+          { type: 'PLAN_UPDATE' as const, reason: 'Plan first', plan: plannedTask },
+          ...readDecisions,
+          readDecisions[0],
+          readDecisions[1],
+          readDecisions[2],
+          readDecisions[3],
+          { type: 'PLAN_UPDATE' as const, reason: 'Inspection is complete', plan: completedPlan },
+          { type: 'COMPLETE' as const, reason: 'Done', summary: 'Inspection complete' }
+        ][index]!;
+      })
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(
+      database.getToolCalls(task.id).filter(({ tool }) => tool.name === 'read_file')
+    ).toHaveLength(5);
+    const guardRequest = requests.find(({ harnessInstruction }) =>
+      harnessInstruction?.includes('Automatic progress guard')
+    );
+    expect(guardRequest?.availableTools.some(({ name }) => name === 'read_file')).toBe(false);
+    expect(guardRequest?.availableTools.some(({ name }) => name === 'write_file')).toBe(true);
+  });
+
+  it('completes a requirement-sized CampusEats generation flow in an empty project', async () => {
+    const requests: DecisionRequest[] = [];
+    const plan: TaskPlan = {
+      goal: campusEatsGoal,
+      assumptions: ['Use a compact JavaScript frontend/backend split suitable for an MVP'],
+      steps: [
+        {
+          id: 'generate-campus-eats',
+          title: 'Generate the CampusEats backend, frontend, tests, seed data, and documentation',
+          status: 'PENDING'
+        }
+      ],
+      verification: [
+        'Backend and frontend entry files are syntactically valid',
+        'The generated backend test passes'
+      ]
+    };
+    const decisions = [
+      { type: 'PLAN_UPDATE' as const, reason: 'Plan the CampusEats MVP', plan },
+      ...campusEatsGeneratedFiles.slice(0, 8).map(([filePath, content]) => ({
+        type: 'TOOL_CALL' as const,
+        reason: `Create ${filePath}`,
+        tool: { name: 'write_file' as const, arguments: { path: filePath, content } }
+      })),
+      {
+        type: 'TOOL_CALL' as const,
+        reason: 'Confirm the generated package scripts before finishing the remaining modules',
+        tool: { name: 'read_file' as const, arguments: { path: 'package.json' } }
+      },
+      ...campusEatsGeneratedFiles.slice(8).map(([filePath, content]) => ({
+        type: 'TOOL_CALL' as const,
+        reason: `Create ${filePath}`,
+        tool: { name: 'write_file' as const, arguments: { path: filePath, content } }
+      })),
+      {
+        type: 'VERIFY' as const,
+        reason: 'Validate the generated CampusEats entry files and test',
+        commands: [
+          'node --check backend/server.js',
+          'node --check frontend/src/main.js',
+          'node --test backend/test/campus-eats.test.js'
+        ]
+      },
+      {
+        type: 'COMPLETE' as const,
+        reason: 'CampusEats scaffold and acceptance checks are complete',
+        summary: 'Generated and verified the CampusEats MVP scaffold'
+      }
+    ];
+    const tools = new ReadingAndWritingTools();
+    const { database, scheduler, task } = await fixture({
+      goal: campusEatsGoal,
+      emptySource: true,
+      blockFirstList: false,
+      tools,
+      budgetManager: new BudgetManager({
+        maxSteps: 32,
+        maxToolCalls: 80,
+        maxDurationMs: 60_000,
+        maxChangedFiles: 100,
+        maxInputTokens: 120_000,
+        maxOutputTokens: 16_000,
+        maxCost: 10,
+        maxReadBytes: 256 * 1024,
+        maxVerificationRuns: 4
+      }),
+      modelGateway: new FakeModelGateway((request, index) => {
+        requests.push(structuredClone(request));
+        return decisions[index]!;
+      })
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)).toMatchObject({
+      status: 'READY_FOR_REVIEW',
+      stopReason: undefined
+    });
+    expect(tools.calls.filter(({ name }) => name === 'write_file')).toHaveLength(
+      campusEatsGeneratedFiles.length
+    );
+    expect(tools.calls.filter(({ name }) => name === 'read_file')).toEqual([
+      expect.objectContaining({ arguments: { path: 'package.json' } })
+    ]);
+    expect(
+      database
+        .getFileChanges(task.id)
+        .map(({ path: filePath }) => filePath)
+        .sort()
+    ).toEqual(campusEatsGeneratedFiles.map(([filePath]) => filePath).sort());
+    expect(database.getVerificationResults(task.id)).toMatchObject([
+      { command: 'node --check backend/server.js', status: 'PASSED' },
+      { command: 'node --check frontend/src/main.js', status: 'PASSED' },
+      { command: 'node --test backend/test/campus-eats.test.js', status: 'PASSED' }
+    ]);
+    expect(
+      requests.some(({ harnessInstruction }) =>
+        harnessInstruction?.includes('Automatic progress guard')
+      )
+    ).toBe(false);
   });
 
   it('invalidates a reusable read after a successful workspace write', async () => {
@@ -1409,37 +1951,40 @@ describe('task lifecycle scheduler', () => {
     });
   });
 
-  it('rejects a change task completion when no workspace changes were produced', async () => {
-    const premature = {
-      type: 'COMPLETE' as const,
-      reason: 'Claim completion without changing the file',
-      summary: 'The refactor is complete'
-    };
-    const { database, scheduler, task } = await fixture({
-      goal: 'Refactor text_parser.py',
-      blockFirstList: false,
-      modelGateway: new FakeModelGateway([
-        {
-          type: 'PLAN_UPDATE',
-          reason: 'Plan the refactor',
-          plan: {
-            ...plannedTask,
-            steps: [{ id: 'refactor', title: 'Refactor the parser', status: 'DONE' }]
-          }
-        },
-        premature,
-        premature,
-        premature
-      ])
-    });
+  it.each(['Create a frontend/backend project', '创建一个前后端分离项目'])(
+    'rejects a creation task completion when no workspace changes were produced: %s',
+    async (goal) => {
+      const premature = {
+        type: 'COMPLETE' as const,
+        reason: 'Claim completion without creating files',
+        summary: 'The project is complete'
+      };
+      const { database, scheduler, task } = await fixture({
+        goal,
+        blockFirstList: false,
+        modelGateway: new FakeModelGateway([
+          {
+            type: 'PLAN_UPDATE',
+            reason: 'Plan the refactor',
+            plan: {
+              ...plannedTask,
+              steps: [{ id: 'create', title: 'Create the project', status: 'DONE' }]
+            }
+          },
+          premature,
+          premature,
+          premature
+        ])
+      });
 
-    scheduler.start(task.id);
-    await scheduler.waitForIdle(task.id);
+      scheduler.start(task.id);
+      await scheduler.waitForIdle(task.id);
 
-    expect(database.getTask(task.id)?.status).toBe('WAITING_USER');
-    expect(database.getEvents(task.id).map(({ type }) => type)).not.toContain('task.completed');
-    expect(database.getFileChanges(task.id)).toEqual([]);
-  });
+      expect(database.getTask(task.id)?.status).toBe('WAITING_USER');
+      expect(database.getEvents(task.id).map(({ type }) => type)).not.toContain('task.completed');
+      expect(database.getFileChanges(task.id)).toEqual([]);
+    }
+  );
 
   it('completes a changed task after a failed patch when a later command verifies the real diff', async () => {
     const tools = new FailedPatchThenVerifiedTools(false);
@@ -1825,7 +2370,57 @@ describe('task lifecycle scheduler', () => {
     expect(tools.calls.map(({ name }) => name)).toEqual(['write_file', 'run_command']);
     expect(
       requests.some(({ harnessInstruction }) =>
-        harnessInstruction?.includes('exactly repeats an earlier write')
+        harnessInstruction?.includes('Automatic write recovery 1')
+      )
+    ).toBe(true);
+  });
+
+  it('recovers from multiple identical successful writes without a git diff loop', async () => {
+    const requests: DecisionRequest[] = [];
+    const write = {
+      type: 'TOOL_CALL' as const,
+      reason: 'Create the generated file',
+      tool: {
+        name: 'write_file' as const,
+        arguments: { path: 'generated.txt', content: 'changed\n' }
+      }
+    };
+    const { database, scheduler, task, tools } = await fixture({
+      blockFirstList: false,
+      tools: new WritingTools(),
+      modelGateway: new FakeModelGateway((request, index) => {
+        requests.push(structuredClone(request));
+        return [
+          { type: 'PLAN_UPDATE' as const, reason: 'Plan first', plan: plannedTask },
+          write,
+          write,
+          write,
+          write,
+          {
+            type: 'VERIFY' as const,
+            reason: 'Use the completed write and verify',
+            commands: ['node --version']
+          },
+          { type: 'COMPLETE' as const, reason: 'Done', summary: 'Generated file verified' }
+        ][index]!;
+      })
+    });
+
+    scheduler.start(task.id);
+    await scheduler.waitForIdle(task.id);
+
+    expect(database.getTask(task.id)?.status).toBe('READY_FOR_REVIEW');
+    expect(tools.calls.filter(({ name }) => name === 'write_file')).toHaveLength(1);
+    expect(tools.calls.filter(({ name }) => name === 'git_diff')).toHaveLength(0);
+    const recovery = requests.find(({ harnessInstruction }) =>
+      harnessInstruction?.includes('Automatic write recovery 1')
+    );
+    expect(
+      recovery?.context.some(
+        ({ reference, content }) =>
+          reference.kind === 'TOOL_RESULT' &&
+          reference.source === 'write_file' &&
+          content.includes('generated.txt')
       )
     ).toBe(true);
   });
@@ -2043,7 +2638,7 @@ describe('task lifecycle scheduler', () => {
 
   it('persists a final Diff, reviews it, and applies accepted files safely', async () => {
     const tools = new WritingTools();
-    const { database, harness, scheduler, task, source } = await fixture({
+    const { database, harness, scheduler, task, source, workspaceManager } = await fixture({
       tools,
       modelGateway: new FakeModelGateway(changeDecisions())
     });
@@ -2082,6 +2677,10 @@ describe('task lifecycle scheduler', () => {
     });
     expect((await scheduler.apply(task.id)).status).toBe('APPLIED');
     expect(await fs.readFile(path.join(source, 'generated.txt'), 'utf8')).toBe('generated\n');
+    expect(database.getProject(task.projectId)?.sourceMetadata?.fileCount).toBe(2);
+    await expect(workspaceManager.listImportedFiles(task.projectId)).resolves.toEqual({
+      files: expect.arrayContaining(['README.md', 'generated.txt'])
+    });
     expect(database.getEvents(task.id).map(({ type }) => type)).toEqual(
       expect.arrayContaining(['change.updated', 'task.applied'])
     );

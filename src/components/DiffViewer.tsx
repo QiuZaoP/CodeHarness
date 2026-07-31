@@ -29,6 +29,7 @@ export function DiffViewer() {
   const { snapshot, decideChange, applyTask, rollbackTask } = useWorkspace();
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [bulkDecision, setBulkDecision] = useState<FileChange['decision'] | null>(null);
+  const [bulkSubmitting, setBulkSubmitting] = useState(false);
   const [confirmRollback, setConfirmRollback] = useState(false);
   const [confirmApply, setConfirmApply] = useState(false);
 
@@ -47,6 +48,22 @@ export function DiffViewer() {
 
   const decideAll = async (decision: FileChange['decision']) => {
     await Promise.all(pending.map((change) => decideChange(change.id, decision)));
+  };
+
+  const confirmBulkDecision = async () => {
+    if (!bulkDecision || bulkSubmitting) return;
+    setBulkSubmitting(true);
+    try {
+      await decideAll(bulkDecision);
+      if (bulkDecision === 'accepted') {
+        await applyTask();
+      }
+      setBulkDecision(null);
+    } catch {
+      // WorkspaceContext exposes the actionable API error in the application error banner.
+    } finally {
+      setBulkSubmitting(false);
+    }
   };
 
   const toggleCollapsed = (changeId: string) => {
@@ -100,7 +117,7 @@ export function DiffViewer() {
             disabled={pending.length === 0}
           >
             <CheckCheck size={14} />
-            全部接受
+            全部接受并应用
           </button>
         </div>
       </header>
@@ -197,33 +214,35 @@ export function DiffViewer() {
       </div>
       <Modal
         open={bulkDecision !== null}
-        title={bulkDecision === 'accepted' ? '接受全部变更' : '拒绝全部变更'}
+        title={bulkDecision === 'accepted' ? '接受并应用全部变更' : '拒绝全部变更'}
         description={`将处理 ${pending.length} 个待审阅文件。`}
         onClose={() => setBulkDecision(null)}
         footer={
           <>
-            <button className="button button--secondary" onClick={() => setBulkDecision(null)}>
+            <button
+              className="button button--secondary"
+              onClick={() => setBulkDecision(null)}
+              disabled={bulkSubmitting}
+            >
               取消
             </button>
             <button
               className={
                 bulkDecision === 'accepted' ? 'button button--primary' : 'button button--danger'
               }
-              onClick={() => {
-                if (bulkDecision) {
-                  void decideAll(bulkDecision);
-                }
-                setBulkDecision(null);
-              }}
+              onClick={() => void confirmBulkDecision()}
+              disabled={bulkSubmitting}
             >
-              确认{bulkDecision === 'accepted' ? '接受' : '拒绝'}
+              {bulkSubmitting
+                ? '正在处理…'
+                : `确认${bulkDecision === 'accepted' ? '接受并应用' : '拒绝'}`}
             </button>
           </>
         }
       >
         <p className="confirmation-copy">
           {bulkDecision === 'accepted'
-            ? '接受后这些文件将进入可应用状态。'
+            ? '接受后这些文件将立即安全写回原始项目，并刷新文件树供下一轮任务继续修改。'
             : '拒绝后这些变更不会进入最终结果，仍可逐文件撤销决定。'}
         </p>
       </Modal>

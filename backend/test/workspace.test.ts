@@ -29,6 +29,28 @@ async function fixture(): Promise<{
 }
 
 describe('task workspace isolation', () => {
+  it('refreshes the imported manifest after source files change', async () => {
+    const { source, manager } = await fixture();
+    const projectId = randomUUID();
+    const imported = await manager.importProject(source, projectId);
+    expect(imported.metadata.fileCount).toBe(2);
+
+    await fs.writeFile(path.join(source, 'generated.txt'), 'generated\n');
+    const refreshed = await manager.refreshImportedProject(source, projectId);
+    const sourceMetadata = JSON.parse(
+      await fs.readFile(path.join(imported.projectPath, 'source-metadata', 'source.json'), 'utf8')
+    ) as { fileCount: number; manifestHash: string };
+
+    expect(refreshed.metadata.fileCount).toBe(3);
+    expect(sourceMetadata).toMatchObject({
+      fileCount: 3,
+      manifestHash: refreshed.metadata.manifestHash
+    });
+    await expect(manager.listImportedFiles(projectId)).resolves.toEqual({
+      files: expect.arrayContaining(['README.md', 'generated.txt', 'src/index.ts'])
+    });
+  });
+
   it('isolates tasks, reports a complete diff, and restores a verified baseline', async () => {
     const { root, source, manager } = await fixture();
     const projectId = randomUUID();
@@ -177,6 +199,67 @@ describe('task workspace isolation', () => {
     expect(
       await fs.stat(path.join(imported.projectPath, 'source-metadata', 'manifest.json'))
     ).toBeDefined();
+  });
+
+  it('keeps source files while skipping oversized and bulk project artifacts', async () => {
+    const { root, source } = await fixture();
+    await fs.mkdir(path.join(source, 'assets'));
+    await fs.writeFile(path.join(source, 'assets', 'a.png'), Buffer.alloc(6, 1));
+    await fs.writeFile(path.join(source, 'assets', 'b.png'), Buffer.alloc(6, 2));
+    await fs.writeFile(path.join(source, 'dataset.csv'), 'value\n1\n');
+    await fs.writeFile(path.join(source, 'model.onnx'), Buffer.alloc(64));
+    await fs.writeFile(path.join(source, 'tasks.json'), JSON.stringify({ data: 'x'.repeat(64) }));
+    const manager = new WorkspaceManager({
+      root: path.join(root, 'artifact-managed'),
+      maxFileBytes: 32,
+      maxImportArtifactBytes: 10,
+      maxImportArtifactFiles: 10
+    });
+
+    const projectId = randomUUID();
+    const imported = await manager.importProject(source, projectId);
+    const task = await manager.createTaskWorkspace(projectId, randomUUID(), source);
+
+    expect(imported.metadata).toMatchObject({
+      fileCount: 3,
+      skippedFileCount: 4,
+      skippedBytes: expect.any(Number),
+      skippedFiles: expect.arrayContaining([
+        expect.objectContaining({ path: 'assets/b.png', reason: 'ARTIFACT_BYTE_BUDGET' }),
+        expect.objectContaining({ path: 'dataset.csv', reason: 'ARTIFACT_BYTE_BUDGET' }),
+        expect.objectContaining({ path: 'model.onnx', reason: 'OVERSIZED_ARTIFACT' }),
+        expect.objectContaining({ path: 'tasks.json', reason: 'OVERSIZED_ARTIFACT' })
+      ])
+    });
+    expect(await fs.readFile(path.join(task.workspacePath, 'README.md'), 'utf8')).toBe(
+      '# Original\n'
+    );
+    expect(await fs.stat(path.join(task.workspacePath, 'assets', 'a.png'))).toBeDefined();
+    expect(
+      await fs.stat(path.join(task.workspacePath, 'assets', 'b.png')).catch(() => undefined)
+    ).toBeUndefined();
+    expect(
+      await fs.stat(path.join(task.workspacePath, 'model.onnx')).catch(() => undefined)
+    ).toBeUndefined();
+    expect(
+      await fs.stat(path.join(task.workspacePath, 'tasks.json')).catch(() => undefined)
+    ).toBeUndefined();
+  });
+
+  it('still rejects oversized source code instead of silently dropping it', async () => {
+    const { root, source } = await fixture();
+    await fs.writeFile(
+      path.join(source, 'src', 'huge.ts'),
+      `export const value = '${'x'.repeat(64)}';\n`
+    );
+    const manager = new WorkspaceManager({
+      root: path.join(root, 'source-limit-managed'),
+      maxFileBytes: 32
+    });
+
+    await expect(manager.importProject(source, randomUUID())).rejects.toThrow(
+      'Source file exceeds the import size limit'
+    );
   });
 
   it('captures source Git revision, branch, and dirty state without changing the source', async () => {

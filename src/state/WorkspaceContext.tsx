@@ -7,7 +7,7 @@ import {
   useMemo,
   useState
 } from 'react';
-import { workspaceApi } from '../services/api';
+import { fileTreeFromPaths, workspaceApi } from '../services/api';
 import { workspaceEvents } from '../services/events';
 import type {
   BackendTask,
@@ -674,22 +674,54 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
   }, [snapshot]);
 
   const applyTask = useCallback(async () => {
-    if (!snapshot?.task.id) {
+    const taskId = snapshot?.task.id;
+    const projectId = snapshot?.activeProjectId;
+    if (!taskId || !projectId) {
       return;
     }
-    const task = await workspaceApi.applyTask(snapshot.task.id);
-    setSnapshot((current) =>
-      current
-        ? {
-            ...current,
-            task: task ? taskFromBackend(task) : { ...current.task, status: 'APPLIED' },
-            sessions: current.sessions.map((session) =>
-              session.id === current.activeSessionId ? { ...session, status: 'completed' } : session
+    try {
+      const task = await workspaceApi.applyTask(taskId);
+      const projectFiles = task ? await workspaceApi.listProjectFiles(projectId) : undefined;
+      setSnapshot((current) => {
+        if (!current) return current;
+        const availableFiles = projectFiles ? new Set(projectFiles) : undefined;
+        const openFilePaths = availableFiles
+          ? current.openFilePaths.filter((filePath) => availableFiles.has(filePath))
+          : current.openFilePaths;
+        const files = availableFiles
+          ? Object.fromEntries(
+              Object.entries(current.files).filter(([filePath]) => availableFiles.has(filePath))
             )
-          }
-        : current
-    );
-  }, [snapshot?.task.id]);
+          : current.files;
+        return {
+          ...current,
+          task: task ? taskFromBackend(task) : { ...current.task, status: 'APPLIED' },
+          sessions: current.sessions.map((session) =>
+            session.id === current.activeSessionId ? { ...session, status: 'completed' } : session
+          ),
+          ...(projectFiles
+            ? {
+                fileTree: fileTreeFromPaths(projectFiles),
+                files,
+                openFilePaths,
+                activeFilePath: availableFiles?.has(current.activeFilePath)
+                  ? current.activeFilePath
+                  : openFilePaths.at(-1) || '',
+                projects: current.projects.map((project) =>
+                  project.id === projectId
+                    ? { ...project, indexedFiles: projectFiles.length }
+                    : project
+                )
+              }
+            : {})
+        };
+      });
+      setError(null);
+    } catch (caught: unknown) {
+      setError(caught instanceof Error ? caught.message : '应用变更失败');
+      throw caught;
+    }
+  }, [snapshot?.activeProjectId, snapshot?.task.id]);
 
   const value = useMemo(
     () => ({

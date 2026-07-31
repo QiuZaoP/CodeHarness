@@ -28,6 +28,19 @@ describe('CodeHarness workbench', () => {
     await waitFor(() => expect(screen.getByText('已接受')).toBeInTheDocument());
   });
 
+  it('accepts all changes and applies them in one confirmed action', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole('heading', { name: '修复登录接口偶发 500' });
+    await user.click(screen.getByRole('tab', { name: /变更/ }));
+    await user.click(screen.getByRole('button', { name: '全部接受并应用' }));
+
+    expect(screen.getByRole('dialog', { name: '接受并应用全部变更' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '确认接受并应用' }));
+    expect(await screen.findByText('已应用')).toBeInTheDocument();
+  });
+
   it('confirms before cancelling the active task', async () => {
     const user = userEvent.setup();
     render(<App />);

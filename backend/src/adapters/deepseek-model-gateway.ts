@@ -11,7 +11,7 @@ import type {
 } from '../ports/model-gateway.js';
 import { loadGatewayConfig, type GatewayConfig } from '../model-gateway/config.js';
 import { CircuitBreaker } from '../model-gateway/circuit-breaker.js';
-import { ModelGatewayError } from '../model-gateway/errors.js';
+import { ModelGatewayError, safeModelDiagnostic } from '../model-gateway/errors.js';
 import { GatewayMetrics } from '../model-gateway/metrics.js';
 import { buildDecisionMessages, buildSummaryMessages } from '../model-gateway/prompts.js';
 import { parseModelDecision } from '../model-gateway/structured.js';
@@ -64,8 +64,7 @@ function modelUsage(
 }
 
 function safeCause(error: unknown): string {
-  const message = error instanceof Error ? error.message : 'unknown provider failure';
-  return message.replace(/(?:sk|key|token)[-_][A-Za-z0-9_-]{8,}/gi, '[REDACTED]');
+  return safeModelDiagnostic(error);
 }
 
 export class DeepSeekModelGateway implements ModelGateway {
@@ -323,11 +322,12 @@ export class DeepSeekModelGateway implements ModelGateway {
     if (error === undefined || error === null) {
       return new ModelGatewayError(`Model ${operation} failed`, 'PROVIDER', {}, 502);
     }
+    const cause = safeCause(error);
     return new ModelGatewayError(
-      `Model ${operation} failed`,
+      `Model ${operation} failed (${cause})`,
       'PROVIDER',
       {
-        cause: safeCause(error)
+        cause
       },
       502
     );

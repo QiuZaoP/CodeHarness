@@ -240,4 +240,17 @@ describe('workspaceApi real backend contract', () => {
     );
     expect(change).toMatchObject({ decision: 'accepted', version: 4 });
   });
+
+  it('reloads the current imported file list after apply', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      expect(new URL(String(input)).pathname).toBe('/api/v1/projects/project-1/files');
+      return jsonResponse({ files: ['backend/src/server.ts', 'frontend/src/main.tsx'] });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      createWorkspaceApi('http://api.test').listProjectFiles('project-1')
+    ).resolves.toEqual(['backend/src/server.ts', 'frontend/src/main.tsx']);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });

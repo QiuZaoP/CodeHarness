@@ -173,6 +173,15 @@ export interface SourceMetadata {
   totalBytes: number;
   manifestHash: string;
   git: SourceGitMetadata;
+  skippedFileCount?: number;
+  skippedBytes?: number;
+  skippedFiles?: SourceSkippedFile[];
+}
+
+export interface SourceSkippedFile {
+  path: string;
+  size: number;
+  reason: 'OVERSIZED_ARTIFACT' | 'ARTIFACT_BYTE_BUDGET' | 'ARTIFACT_FILE_BUDGET';
 }
 
 export interface RunBudget {
