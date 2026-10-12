@@ -114,7 +114,12 @@ function extractJsonObject(content: string): string {
 function sanitizeJson(content: string): string {
   let result = content;
   result = result.replace(/,\s*([}\]])/g, '$1');
-  result = result.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
+  result = [...result]
+    .filter((character) => {
+      const code = character.charCodeAt(0);
+      return !(code <= 0x08 || (code >= 0x0b && code <= 0x0c) || (code >= 0x0e && code <= 0x1f));
+    })
+    .join('');
   return result;
 }
 

@@ -53,7 +53,8 @@ describe('WorkspaceProvider task events', () => {
         }
       ],
       task: snapshot.task,
-      changes: snapshot.changes
+      changes: snapshot.changes,
+      changesTotal: snapshot.changesTotal ?? snapshot.changes.length
     });
     vi.spyOn(workspaceEvents, 'subscribe').mockImplementation((_taskId, onEvent) => {
       emit = onEvent;

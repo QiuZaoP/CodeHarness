@@ -330,10 +330,8 @@ export function createWorkspaceApi(apiBaseUrl = configuredApiBaseUrl) {
       const activeTask = activeSession ? tasksBySession.get(activeSession.id) : undefined;
       const changesResult =
         activeTask && activeTask.status !== 'CANCELLED'
-          ? (
-              await request<{ changes: BackendFileChange[]; total: number }>(
-                `/api/v1/tasks/${encodeURIComponent(activeTask.id)}/changes?offset=0&limit=100`
-              )
+          ? await request<{ changes: BackendFileChange[]; total: number }>(
+              `/api/v1/tasks/${encodeURIComponent(activeTask.id)}/changes?offset=0&limit=100`
             )
           : { changes: [] as BackendFileChange[], total: 0 };
 
@@ -506,9 +504,16 @@ export function createWorkspaceApi(apiBaseUrl = configuredApiBaseUrl) {
       });
     },
 
-    async getChanges(taskId: string, offset = 0, limit = 100): Promise<{ changes: FileChange[]; total: number }> {
+    async getChanges(
+      taskId: string,
+      offset = 0,
+      limit = 100
+    ): Promise<{ changes: FileChange[]; total: number }> {
       if (useMock) {
-        return { changes: structuredClone(initialSnapshot.changes), total: initialSnapshot.changes.length };
+        return {
+          changes: structuredClone(initialSnapshot.changes),
+          total: initialSnapshot.changes.length
+        };
       }
       const result = await request<{ changes: BackendFileChange[]; total: number }>(
         `/api/v1/tasks/${encodeURIComponent(taskId)}/changes?offset=${offset}&limit=${limit}`

@@ -440,7 +440,11 @@ export class AppDatabase {
     return this.fileChanges.listByTask(taskId);
   }
 
-  getFileChangesPaginated(taskId: string, offset: number, limit: number): { changes: StoredFileChange[]; total: number } {
+  getFileChangesPaginated(
+    taskId: string,
+    offset: number,
+    limit: number
+  ): { changes: StoredFileChange[]; total: number } {
     const total = this.fileChanges.countByTask(taskId);
     const changes = this.fileChanges.listByTaskPaginated(taskId, offset, limit);
     return { changes, total };

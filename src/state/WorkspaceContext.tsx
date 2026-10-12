@@ -707,7 +707,11 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
     if (currentLoaded >= (snapshot.changesTotal ?? 0)) {
       return;
     }
-    const result = await workspaceApi.getChanges(snapshot.task.id, currentLoaded, CHANGES_PAGE_SIZE);
+    const result = await workspaceApi.getChanges(
+      snapshot.task.id,
+      currentLoaded,
+      CHANGES_PAGE_SIZE
+    );
     setSnapshot((current) =>
       current
         ? {

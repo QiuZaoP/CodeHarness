@@ -26,7 +26,15 @@ function decisionLabel(decision: FileChange['decision']) {
 }
 
 export function DiffViewer() {
-  const { snapshot, decideChange, applyTask, rollbackTask, changesTotal, changesLoaded, loadMoreChanges } = useWorkspace();
+  const {
+    snapshot,
+    decideChange,
+    applyTask,
+    rollbackTask,
+    changesTotal,
+    changesLoaded,
+    loadMoreChanges
+  } = useWorkspace();
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [bulkDecision, setBulkDecision] = useState<FileChange['decision'] | null>(null);
   const [confirmRollback, setConfirmRollback] = useState(false);

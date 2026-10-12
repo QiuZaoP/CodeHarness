@@ -233,7 +233,11 @@ export class HarnessRunner {
     return this.dependencies.database.getFileChanges(taskId);
   }
 
-  getFileChangesPaginated(taskId: string, offset: number, limit: number): { changes: FileChange[]; total: number } {
+  getFileChangesPaginated(
+    taskId: string,
+    offset: number,
+    limit: number
+  ): { changes: FileChange[]; total: number } {
     this.requireTask(taskId);
     return this.dependencies.database.getFileChangesPaginated(taskId, offset, limit);
   }
@@ -902,7 +906,11 @@ export class HarnessRunner {
             this.planningRequest(
               checkpoint.state,
               selection.entries,
-              this.verificationAutoRecoveryMessage(autoAttempt, 3, repeatedFailedVerification.command),
+              this.verificationAutoRecoveryMessage(
+                autoAttempt,
+                3,
+                repeatedFailedVerification.command
+              ),
               []
             ),
             signal
@@ -1090,7 +1098,11 @@ export class HarnessRunner {
     return result.checkpoint;
   }
 
-  private observeTurn(taskId: string, observation: HarnessObservation, countFailure: boolean = true): TaskRunCheckpoint {
+  private observeTurn(
+    taskId: string,
+    observation: HarnessObservation,
+    countFailure: boolean = true
+  ): TaskRunCheckpoint {
     const checkpoint = this.dependencies.database.getTaskRun(taskId);
     const turn = checkpoint?.state.activeTurn;
     if (!checkpoint || !turn || turn.status !== 'DECIDED') {
@@ -1105,7 +1117,8 @@ export class HarnessRunner {
     const failed = observation.status === 'FAILED';
     const state: RunState = {
       ...this.synchronizeRunState(checkpoint.state, this.requireTask(taskId)),
-      consecutiveFailures: failed && countFailure ? (checkpoint.state.consecutiveFailures ?? 0) + 1 : 0,
+      consecutiveFailures:
+        failed && countFailure ? (checkpoint.state.consecutiveFailures ?? 0) + 1 : 0,
       lastVerificationPassed: observation.verificationResultIds
         ? observation.status === 'SUCCEEDED'
         : checkpoint.state.lastVerificationPassed,
@@ -1284,7 +1297,10 @@ export class HarnessRunner {
           verificationResultIds: resultIds
         };
     const checkpoint = this.observeTurn(task.id, observation, !failed);
-    if (failed && (checkpoint.state.consecutiveFailures ?? 0) >= config.maxConsecutiveHarnessFailures) {
+    if (
+      failed &&
+      (checkpoint.state.consecutiveFailures ?? 0) >= config.maxConsecutiveHarnessFailures
+    ) {
       task = await this.finalVerificationRecovery(task, checkpoint, signal);
       if (task.status !== 'EXECUTING') return task;
     }
@@ -1301,7 +1317,10 @@ export class HarnessRunner {
       .filter((v) => v.status === 'FAILED' || v.status === 'ERROR')
       .slice(-3);
     const failureDetails = failedVerifications
-      .map((v, i) => `${i + 1}. "${v.command}" (exit ${v.exitCode ?? '?'}): ${v.outputSummary?.slice(0, 200) ?? 'no output'}`)
+      .map(
+        (v, i) =>
+          `${i + 1}. "${v.command}" (exit ${v.exitCode ?? '?'}): ${v.outputSummary?.slice(0, 200) ?? 'no output'}`
+      )
       .join('\n');
     const recoveryMessage = `CRITICAL: The last ${failedVerifications.length} verification command(s) FAILED consecutively:\n${failureDetails}\n\nYou MUST fix the underlying code issue now. Do NOT return another VERIFY decision. Instead: (1) use read_file to inspect the files involved in the failing test, (2) use apply_patch or write_file to fix the root cause, (3) only after making a real code change, return a new VERIFY decision with the same or different verification command. If the issue requires user input or external information, ask the user.`;
     const state = this.synchronizeRunState(checkpoint.state, task);
@@ -1922,8 +1941,10 @@ export class HarnessRunner {
     const failedWrite = this.latestFailedWriteCall(taskId);
     if (
       failedVerification &&
-      (!invalidPatch || Date.parse(failedVerification.createdAt) >= Date.parse(invalidPatch.startedAt)) &&
-      (!failedWrite || Date.parse(failedVerification.createdAt) >= Date.parse(failedWrite.startedAt))
+      (!invalidPatch ||
+        Date.parse(failedVerification.createdAt) >= Date.parse(invalidPatch.startedAt)) &&
+      (!failedWrite ||
+        Date.parse(failedVerification.createdAt) >= Date.parse(failedWrite.startedAt))
     ) {
       const command = failedVerification.command;
       const summary = failedVerification.outputSummary?.slice(0, 500) ?? 'No output available';
@@ -1961,7 +1982,9 @@ export class HarnessRunner {
     const candidates = runStartedAt
       ? verifications.filter((v) => Date.parse(v.createdAt) >= Date.parse(runStartedAt))
       : verifications;
-    const failed = [...candidates].reverse().find((v) => v.status === 'FAILED' || v.status === 'ERROR');
+    const failed = [...candidates]
+      .reverse()
+      .find((v) => v.status === 'FAILED' || v.status === 'ERROR');
     if (!failed) return undefined;
     const failedTime = Date.parse(failed.createdAt);
     const hasSuccessAfter = candidates.some(
@@ -2117,9 +2140,7 @@ Any further repeat of the same command will cause this task to pause.`;
   ): string {
     const badCommands =
       decision.type === 'VERIFY'
-        ? decision.commands
-            .map((c) => JSON.stringify(c.slice(0, 200)))
-            .join(', ')
+        ? decision.commands.map((c) => JSON.stringify(c.slice(0, 200))).join(', ')
         : '';
     if (attempt === 1) {
       return `Correction ${attempt} of ${maxAttempts}: the previous VERIFY decision contained commands rejected by the command policy. Rejected command(s): ${badCommands}
@@ -2200,9 +2221,10 @@ Any further invalid VERIFY command will cause the harness to use a fallback auto
     if (subdirs.length > 0) {
       return `Consider listing a subdirectory (e.g. ${subdirs.map((d) => `list_files with path="${d}"`).join(', ')}) or read a specific file from the listing.`;
     }
-    const files = call?.result?.output && Array.isArray(call.result.output)
-      ? (call.result.output as string[]).filter((f) => typeof f === 'string')
-      : [];
+    const files =
+      call?.result?.output && Array.isArray(call.result.output)
+        ? (call.result.output as string[]).filter((f) => typeof f === 'string')
+        : [];
     if (files.length > 0) {
       return `Consider reading a specific file with read_file (e.g. ${files.slice(0, 3).join(', ')}) or applying a patch.`;
     }

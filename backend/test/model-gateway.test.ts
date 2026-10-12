@@ -243,7 +243,8 @@ test('recovers structured decisions from common model output issues', () => {
 
   // Wrapped in markdown code fence
   assert.equal(
-    parseModelDecision('```json\n{"type":"VERIFY","reason":"check","commands":["npm test"]}\n```').type,
+    parseModelDecision('```json\n{"type":"VERIFY","reason":"check","commands":["npm test"]}\n```')
+      .type,
     'VERIFY'
   );
 
@@ -263,9 +264,8 @@ test('recovers structured decisions from common model output issues', () => {
 
   // Multiple recovery issues combined (text + trailing comma)
   assert.equal(
-    parseModelDecision(
-      'Response:\n{"type":"VERIFY","reason":"check","commands":["npm test",]}\n'
-    ).type,
+    parseModelDecision('Response:\n{"type":"VERIFY","reason":"check","commands":["npm test",]}\n')
+      .type,
     'VERIFY'
   );
 });
