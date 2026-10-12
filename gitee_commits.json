@@ -1,0 +1,842 @@
+{
+  "main": [
+    {
+      "sha": "c083afc",
+      "date": "2026-07-23T18:15:25+08:00",
+      "author": "球藻OP",
+      "message": "Merge remote-tracking branch 'origin/main'",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/c083afc707e2d18b1857b3420e65933890989a48"
+    },
+    {
+      "sha": "5027bc9",
+      "date": "2026-07-23T18:11:40+08:00",
+      "author": "球藻OP",
+      "message": "chore: initialize project collaboration baseline",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/5027bc93a9ddcb2ab98a14a79ca87347c3dfd4b4"
+    },
+    {
+      "sha": "b685d45",
+      "date": "2026-07-23T16:27:35+08:00",
+      "author": "QiuZaoP",
+      "message": "Initial commit",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/b685d45c1c27f36dc240a3f13fea4def5de0ef4c"
+    }
+  ],
+  "develop": [
+    {
+      "sha": "0e6df91",
+      "date": "2026-07-29T02:06:52+08:00",
+      "author": "球藻OP",
+      "message": "fix: deliver and persist task completion replies",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/0e6df91b759dcfff14f0dbf55eee212b5eac8593"
+    },
+    {
+      "sha": "3ef6dfb",
+      "date": "2026-07-28T18:30:45+08:00",
+      "author": "球藻OP",
+      "message": "fix: start tasks automatically after submission",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/3ef6dfb8860a360f05b13c260083ef3483d11652"
+    },
+    {
+      "sha": "4132da2",
+      "date": "2026-07-28T17:00:40+08:00",
+      "author": "球藻OP",
+      "message": "fix: handle bodyless task control requests",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/4132da2de3bfc32e1cef926f887901083c488913"
+    },
+    {
+      "sha": "94817ff",
+      "date": "2026-07-28T16:21:42+08:00",
+      "author": "球藻OP",
+      "message": "fix: complete repository workspace interactions",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/94817ffdc9783957129e1e188189c3cf751b8b82"
+    },
+    {
+      "sha": "9b5f262",
+      "date": "2026-07-28T02:51:07+08:00",
+      "author": "球藻OP",
+      "message": "fix: make local project import resilient",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/9b5f26251552b69671aa4a7494743b9206b5710f"
+    },
+    {
+      "sha": "29199a8",
+      "date": "2026-07-27T16:46:56+08:00",
+      "author": "球藻OP",
+      "message": "merge: integrate model gateway",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/29199a85a8177b56c37fda96c6cd5fd0943d2042"
+    },
+    {
+      "sha": "faeb8bd",
+      "date": "2026-07-27T16:32:16+08:00",
+      "author": "球藻OP",
+      "message": "merge: integrate code indexer",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/faeb8bd543e7db1833db7ed9c023b72ad9a877ee"
+    },
+    {
+      "sha": "b5b3559",
+      "date": "2026-07-26T23:33:03+08:00",
+      "author": "deersirz",
+      "message": "feat: implement role four model gateway",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/b5b35597f7c2846256c79d8c8bb94e541e149283"
+    },
+    {
+      "sha": "400ea0b",
+      "date": "2026-07-26T17:24:30+08:00",
+      "author": "花火",
+      "message": "docs: clarify index parser fallback",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/400ea0b3461c776138885ede615ffc22966c3b69"
+    },
+    {
+      "sha": "b8a5147",
+      "date": "2026-07-26T17:21:20+08:00",
+      "author": "花火",
+      "message": "feat: complete index contracts and fallbacks",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/b8a51473f598bbf4feecc4aca0fa6251933758b7"
+    },
+    {
+      "sha": "099ce62",
+      "date": "2026-07-26T17:07:51+08:00",
+      "author": "花火",
+      "message": "feat: store qualified index symbols",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/099ce62c318a7cdb2b479a58941af6f52161295b"
+    },
+    {
+      "sha": "05b4ba7",
+      "date": "2026-07-26T17:06:24+08:00",
+      "author": "花火",
+      "message": "feat: complete native code index integration",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/05b4ba7b590411b93e27f86665b400b5f73ed97b"
+    },
+    {
+      "sha": "576bce0",
+      "date": "2026-07-26T16:48:34+08:00",
+      "author": "花火",
+      "message": "feat: add SQLite code index service",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/576bce0c9a3455defdb4c924901f1b42e920712f"
+    },
+    {
+      "sha": "2c0c5e7",
+      "date": "2026-07-26T16:48:22+08:00",
+      "author": "花火",
+      "message": "feat: integrate code index service",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/2c0c5e7135af11e53e6ebf996bfa3aff96ab1769"
+    },
+    {
+      "sha": "988f07f",
+      "date": "2026-07-26T16:36:09+08:00",
+      "author": "花火",
+      "message": "Merge remote-tracking branch 'origin/develop' into feature/code-indexer",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/988f07f1a18763bd3c99bb4adc241817896c7129"
+    },
+    {
+      "sha": "8dae4cb",
+      "date": "2026-07-26T16:17:57+08:00",
+      "author": "花火",
+      "message": "feat: add repository indexer mvp",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/8dae4cb6691636d0b24402268b0623ec3f85d570"
+    },
+    {
+      "sha": "ddb9b84",
+      "date": "2026-07-25T12:43:38+08:00",
+      "author": "Zijie-cai57",
+      "message": "chore: finalize harness runtime release",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/ddb9b8457927b582268b4ea89ec719dd73363a35"
+    },
+    {
+      "sha": "539646f",
+      "date": "2026-07-25T12:36:46+08:00",
+      "author": "Zijie-cai57",
+      "message": "docs: consolidate harness runtime handoff",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/539646f123fcf243a3512b53becd6ef9105dfd0f"
+    },
+    {
+      "sha": "1f39455",
+      "date": "2026-07-25T00:22:52+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: integrate frontend workbench runtime",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/1f394557c46a900cae838c10955f9fbaa2d1c101"
+    },
+    {
+      "sha": "ee9ef89",
+      "date": "2026-07-25T00:03:08+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: add runtime quality and safety controls",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/ee9ef89c1b9772bceb54c0eaa9b2e393ecad843c"
+    },
+    {
+      "sha": "a6374ce",
+      "date": "2026-07-24T23:30:40+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: complete API and persistent SSE integration",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/a6374ce3fec7ae69cc1cae4054be56a05c69d400"
+    },
+    {
+      "sha": "0e5d66e",
+      "date": "2026-07-24T23:17:01+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: deliver reviewed workspace changes",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/0e5d66e6ce28c9abadcd4e5f94957841d2110d9a"
+    },
+    {
+      "sha": "5450b26",
+      "date": "2026-07-24T22:39:11+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: implement resumable harness loop",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/5450b26e146795a13c1c1e6e48115da11b46a477"
+    },
+    {
+      "sha": "6e22036",
+      "date": "2026-07-24T21:58:16+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: persist context and task budgets",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/6e2203691dfb3f4096b3d6c8e90755f0b3e25c40"
+    },
+    {
+      "sha": "b041da6",
+      "date": "2026-07-24T21:33:13+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: integrate model and index ports",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/b041da6d46d485f99c0646b73687e4019b0d5598"
+    },
+    {
+      "sha": "a22fa68",
+      "date": "2026-07-24T21:19:07+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: add resumable task lifecycle",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/a22fa6850402e99c9725ab92418c9231085ec909"
+    },
+    {
+      "sha": "3b2bb81",
+      "date": "2026-07-24T20:57:09+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: implement controlled tool runtime",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/3b2bb81e6d6d7989fa3fc67f72a146d286f9892b"
+    },
+    {
+      "sha": "c61012f",
+      "date": "2026-07-24T20:27:22+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: isolate task workspaces",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/c61012f03555dd3f7aae8b5f375be420cf5b91bf"
+    },
+    {
+      "sha": "4d851ba",
+      "date": "2026-07-24T20:01:57+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: add transactional task persistence",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/4d851bafbc35f083c8f6f711256db8a01c192a3d"
+    },
+    {
+      "sha": "3256ef3",
+      "date": "2026-07-24T19:41:56+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: establish versioned harness contracts",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/3256ef3e126f071499ce9022df5135c5b592d826"
+    },
+    {
+      "sha": "ec1c1a3",
+      "date": "2026-07-24T19:40:06+08:00",
+      "author": "louyu",
+      "message": "feat: align frontend workbench with harness contracts",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/ec1c1a3bf807a0e4978eaf7b2eec0906f40e5b5d"
+    },
+    {
+      "sha": "1d93dec",
+      "date": "2026-07-24T19:07:59+08:00",
+      "author": "Zijie-cai57",
+      "message": "chore: establish cross-platform quality baseline",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/1d93dec38f91c17727bfc2921b60765509586a4c"
+    },
+    {
+      "sha": "2f1cb12",
+      "date": "2026-07-24T17:07:31+08:00",
+      "author": "球藻OP",
+      "message": "docs: complete API and SSE contracts",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/2f1cb1209a2e696861f8236acef8f6594d8676c2"
+    },
+    {
+      "sha": "3cdaac8",
+      "date": "2026-07-24T16:55:31+08:00",
+      "author": "球藻OP",
+      "message": "feat: scaffold harness backend runtime",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/3cdaac85b4125fc00ac4069434f3019e71277bd4"
+    },
+    {
+      "sha": "c021da3",
+      "date": "2026-07-24T14:47:11+08:00",
+      "author": "louyu",
+      "message": "feat: implement frontend workbench",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/c021da3a8a7fed2cbfd4be8b0a0893d91207bf6a"
+    },
+    {
+      "sha": "c083afc",
+      "date": "2026-07-23T18:15:25+08:00",
+      "author": "球藻OP",
+      "message": "Merge remote-tracking branch 'origin/main'",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/c083afc707e2d18b1857b3420e65933890989a48"
+    },
+    {
+      "sha": "5027bc9",
+      "date": "2026-07-23T18:11:40+08:00",
+      "author": "球藻OP",
+      "message": "chore: initialize project collaboration baseline",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/5027bc93a9ddcb2ab98a14a79ca87347c3dfd4b4"
+    },
+    {
+      "sha": "b685d45",
+      "date": "2026-07-23T16:27:35+08:00",
+      "author": "QiuZaoP",
+      "message": "Initial commit",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/b685d45c1c27f36dc240a3f13fea4def5de0ef4c"
+    }
+  ],
+  "feature/frontend-workbench": [
+    {
+      "sha": "ec1c1a3",
+      "date": "2026-07-24T19:40:06+08:00",
+      "author": "louyu",
+      "message": "feat: align frontend workbench with harness contracts",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/ec1c1a3bf807a0e4978eaf7b2eec0906f40e5b5d"
+    },
+    {
+      "sha": "c021da3",
+      "date": "2026-07-24T14:47:11+08:00",
+      "author": "louyu",
+      "message": "feat: implement frontend workbench",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/c021da3a8a7fed2cbfd4be8b0a0893d91207bf6a"
+    },
+    {
+      "sha": "c083afc",
+      "date": "2026-07-23T18:15:25+08:00",
+      "author": "球藻OP",
+      "message": "Merge remote-tracking branch 'origin/main'",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/c083afc707e2d18b1857b3420e65933890989a48"
+    },
+    {
+      "sha": "5027bc9",
+      "date": "2026-07-23T18:11:40+08:00",
+      "author": "球藻OP",
+      "message": "chore: initialize project collaboration baseline",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/5027bc93a9ddcb2ab98a14a79ca87347c3dfd4b4"
+    },
+    {
+      "sha": "b685d45",
+      "date": "2026-07-23T16:27:35+08:00",
+      "author": "QiuZaoP",
+      "message": "Initial commit",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/b685d45c1c27f36dc240a3f13fea4def5de0ef4c"
+    }
+  ],
+  "feature/harness-runtime": [
+    {
+      "sha": "ddb9b84",
+      "date": "2026-07-25T12:43:38+08:00",
+      "author": "Zijie-cai57",
+      "message": "chore: finalize harness runtime release",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/ddb9b8457927b582268b4ea89ec719dd73363a35"
+    },
+    {
+      "sha": "539646f",
+      "date": "2026-07-25T12:36:46+08:00",
+      "author": "Zijie-cai57",
+      "message": "docs: consolidate harness runtime handoff",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/539646f123fcf243a3512b53becd6ef9105dfd0f"
+    },
+    {
+      "sha": "1f39455",
+      "date": "2026-07-25T00:22:52+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: integrate frontend workbench runtime",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/1f394557c46a900cae838c10955f9fbaa2d1c101"
+    },
+    {
+      "sha": "ee9ef89",
+      "date": "2026-07-25T00:03:08+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: add runtime quality and safety controls",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/ee9ef89c1b9772bceb54c0eaa9b2e393ecad843c"
+    },
+    {
+      "sha": "a6374ce",
+      "date": "2026-07-24T23:30:40+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: complete API and persistent SSE integration",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/a6374ce3fec7ae69cc1cae4054be56a05c69d400"
+    },
+    {
+      "sha": "0e5d66e",
+      "date": "2026-07-24T23:17:01+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: deliver reviewed workspace changes",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/0e5d66e6ce28c9abadcd4e5f94957841d2110d9a"
+    },
+    {
+      "sha": "5450b26",
+      "date": "2026-07-24T22:39:11+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: implement resumable harness loop",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/5450b26e146795a13c1c1e6e48115da11b46a477"
+    },
+    {
+      "sha": "6e22036",
+      "date": "2026-07-24T21:58:16+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: persist context and task budgets",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/6e2203691dfb3f4096b3d6c8e90755f0b3e25c40"
+    },
+    {
+      "sha": "b041da6",
+      "date": "2026-07-24T21:33:13+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: integrate model and index ports",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/b041da6d46d485f99c0646b73687e4019b0d5598"
+    },
+    {
+      "sha": "a22fa68",
+      "date": "2026-07-24T21:19:07+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: add resumable task lifecycle",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/a22fa6850402e99c9725ab92418c9231085ec909"
+    },
+    {
+      "sha": "3b2bb81",
+      "date": "2026-07-24T20:57:09+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: implement controlled tool runtime",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/3b2bb81e6d6d7989fa3fc67f72a146d286f9892b"
+    },
+    {
+      "sha": "c61012f",
+      "date": "2026-07-24T20:27:22+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: isolate task workspaces",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/c61012f03555dd3f7aae8b5f375be420cf5b91bf"
+    },
+    {
+      "sha": "4d851ba",
+      "date": "2026-07-24T20:01:57+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: add transactional task persistence",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/4d851bafbc35f083c8f6f711256db8a01c192a3d"
+    },
+    {
+      "sha": "3256ef3",
+      "date": "2026-07-24T19:41:56+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: establish versioned harness contracts",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/3256ef3e126f071499ce9022df5135c5b592d826"
+    },
+    {
+      "sha": "ec1c1a3",
+      "date": "2026-07-24T19:40:06+08:00",
+      "author": "louyu",
+      "message": "feat: align frontend workbench with harness contracts",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/ec1c1a3bf807a0e4978eaf7b2eec0906f40e5b5d"
+    },
+    {
+      "sha": "1d93dec",
+      "date": "2026-07-24T19:07:59+08:00",
+      "author": "Zijie-cai57",
+      "message": "chore: establish cross-platform quality baseline",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/1d93dec38f91c17727bfc2921b60765509586a4c"
+    },
+    {
+      "sha": "2f1cb12",
+      "date": "2026-07-24T17:07:31+08:00",
+      "author": "球藻OP",
+      "message": "docs: complete API and SSE contracts",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/2f1cb1209a2e696861f8236acef8f6594d8676c2"
+    },
+    {
+      "sha": "3cdaac8",
+      "date": "2026-07-24T16:55:31+08:00",
+      "author": "球藻OP",
+      "message": "feat: scaffold harness backend runtime",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/3cdaac85b4125fc00ac4069434f3019e71277bd4"
+    },
+    {
+      "sha": "c021da3",
+      "date": "2026-07-24T14:47:11+08:00",
+      "author": "louyu",
+      "message": "feat: implement frontend workbench",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/c021da3a8a7fed2cbfd4be8b0a0893d91207bf6a"
+    },
+    {
+      "sha": "c083afc",
+      "date": "2026-07-23T18:15:25+08:00",
+      "author": "球藻OP",
+      "message": "Merge remote-tracking branch 'origin/main'",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/c083afc707e2d18b1857b3420e65933890989a48"
+    },
+    {
+      "sha": "5027bc9",
+      "date": "2026-07-23T18:11:40+08:00",
+      "author": "球藻OP",
+      "message": "chore: initialize project collaboration baseline",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/5027bc93a9ddcb2ab98a14a79ca87347c3dfd4b4"
+    },
+    {
+      "sha": "b685d45",
+      "date": "2026-07-23T16:27:35+08:00",
+      "author": "QiuZaoP",
+      "message": "Initial commit",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/b685d45c1c27f36dc240a3f13fea4def5de0ef4c"
+    }
+  ],
+  "feature/code-indexer": [
+    {
+      "sha": "400ea0b",
+      "date": "2026-07-26T17:24:30+08:00",
+      "author": "花火",
+      "message": "docs: clarify index parser fallback",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/400ea0b3461c776138885ede615ffc22966c3b69"
+    },
+    {
+      "sha": "b8a5147",
+      "date": "2026-07-26T17:21:20+08:00",
+      "author": "花火",
+      "message": "feat: complete index contracts and fallbacks",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/b8a51473f598bbf4feecc4aca0fa6251933758b7"
+    },
+    {
+      "sha": "099ce62",
+      "date": "2026-07-26T17:07:51+08:00",
+      "author": "花火",
+      "message": "feat: store qualified index symbols",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/099ce62c318a7cdb2b479a58941af6f52161295b"
+    },
+    {
+      "sha": "05b4ba7",
+      "date": "2026-07-26T17:06:24+08:00",
+      "author": "花火",
+      "message": "feat: complete native code index integration",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/05b4ba7b590411b93e27f86665b400b5f73ed97b"
+    },
+    {
+      "sha": "576bce0",
+      "date": "2026-07-26T16:48:34+08:00",
+      "author": "花火",
+      "message": "feat: add SQLite code index service",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/576bce0c9a3455defdb4c924901f1b42e920712f"
+    },
+    {
+      "sha": "2c0c5e7",
+      "date": "2026-07-26T16:48:22+08:00",
+      "author": "花火",
+      "message": "feat: integrate code index service",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/2c0c5e7135af11e53e6ebf996bfa3aff96ab1769"
+    },
+    {
+      "sha": "988f07f",
+      "date": "2026-07-26T16:36:09+08:00",
+      "author": "花火",
+      "message": "Merge remote-tracking branch 'origin/develop' into feature/code-indexer",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/988f07f1a18763bd3c99bb4adc241817896c7129"
+    },
+    {
+      "sha": "8dae4cb",
+      "date": "2026-07-26T16:17:57+08:00",
+      "author": "花火",
+      "message": "feat: add repository indexer mvp",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/8dae4cb6691636d0b24402268b0623ec3f85d570"
+    },
+    {
+      "sha": "2f1cb12",
+      "date": "2026-07-24T17:07:31+08:00",
+      "author": "球藻OP",
+      "message": "docs: complete API and SSE contracts",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/2f1cb1209a2e696861f8236acef8f6594d8676c2"
+    },
+    {
+      "sha": "3cdaac8",
+      "date": "2026-07-24T16:55:31+08:00",
+      "author": "球藻OP",
+      "message": "feat: scaffold harness backend runtime",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/3cdaac85b4125fc00ac4069434f3019e71277bd4"
+    },
+    {
+      "sha": "c083afc",
+      "date": "2026-07-23T18:15:25+08:00",
+      "author": "球藻OP",
+      "message": "Merge remote-tracking branch 'origin/main'",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/c083afc707e2d18b1857b3420e65933890989a48"
+    },
+    {
+      "sha": "5027bc9",
+      "date": "2026-07-23T18:11:40+08:00",
+      "author": "球藻OP",
+      "message": "chore: initialize project collaboration baseline",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/5027bc93a9ddcb2ab98a14a79ca87347c3dfd4b4"
+    },
+    {
+      "sha": "b685d45",
+      "date": "2026-07-23T16:27:35+08:00",
+      "author": "QiuZaoP",
+      "message": "Initial commit",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/b685d45c1c27f36dc240a3f13fea4def5de0ef4c"
+    }
+  ],
+  "feature/model-gateway": [
+    {
+      "sha": "b5b3559",
+      "date": "2026-07-26T23:33:03+08:00",
+      "author": "deersirz",
+      "message": "feat: implement role four model gateway",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/b5b35597f7c2846256c79d8c8bb94e541e149283"
+    },
+    {
+      "sha": "c083afc",
+      "date": "2026-07-23T18:15:25+08:00",
+      "author": "球藻OP",
+      "message": "Merge remote-tracking branch 'origin/main'",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/c083afc707e2d18b1857b3420e65933890989a48"
+    },
+    {
+      "sha": "5027bc9",
+      "date": "2026-07-23T18:11:40+08:00",
+      "author": "球藻OP",
+      "message": "chore: initialize project collaboration baseline",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/5027bc93a9ddcb2ab98a14a79ca87347c3dfd4b4"
+    },
+    {
+      "sha": "b685d45",
+      "date": "2026-07-23T16:27:35+08:00",
+      "author": "QiuZaoP",
+      "message": "Initial commit",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/b685d45c1c27f36dc240a3f13fea4def5de0ef4c"
+    }
+  ],
+  "integrate/all-modules-v2": [
+    {
+      "sha": "29199a8",
+      "date": "2026-07-27T16:46:56+08:00",
+      "author": "球藻OP",
+      "message": "merge: integrate model gateway",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/29199a85a8177b56c37fda96c6cd5fd0943d2042"
+    },
+    {
+      "sha": "faeb8bd",
+      "date": "2026-07-27T16:32:16+08:00",
+      "author": "球藻OP",
+      "message": "merge: integrate code indexer",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/faeb8bd543e7db1833db7ed9c023b72ad9a877ee"
+    },
+    {
+      "sha": "b5b3559",
+      "date": "2026-07-26T23:33:03+08:00",
+      "author": "deersirz",
+      "message": "feat: implement role four model gateway",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/b5b35597f7c2846256c79d8c8bb94e541e149283"
+    },
+    {
+      "sha": "400ea0b",
+      "date": "2026-07-26T17:24:30+08:00",
+      "author": "花火",
+      "message": "docs: clarify index parser fallback",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/400ea0b3461c776138885ede615ffc22966c3b69"
+    },
+    {
+      "sha": "b8a5147",
+      "date": "2026-07-26T17:21:20+08:00",
+      "author": "花火",
+      "message": "feat: complete index contracts and fallbacks",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/b8a51473f598bbf4feecc4aca0fa6251933758b7"
+    },
+    {
+      "sha": "099ce62",
+      "date": "2026-07-26T17:07:51+08:00",
+      "author": "花火",
+      "message": "feat: store qualified index symbols",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/099ce62c318a7cdb2b479a58941af6f52161295b"
+    },
+    {
+      "sha": "05b4ba7",
+      "date": "2026-07-26T17:06:24+08:00",
+      "author": "花火",
+      "message": "feat: complete native code index integration",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/05b4ba7b590411b93e27f86665b400b5f73ed97b"
+    },
+    {
+      "sha": "576bce0",
+      "date": "2026-07-26T16:48:34+08:00",
+      "author": "花火",
+      "message": "feat: add SQLite code index service",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/576bce0c9a3455defdb4c924901f1b42e920712f"
+    },
+    {
+      "sha": "2c0c5e7",
+      "date": "2026-07-26T16:48:22+08:00",
+      "author": "花火",
+      "message": "feat: integrate code index service",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/2c0c5e7135af11e53e6ebf996bfa3aff96ab1769"
+    },
+    {
+      "sha": "988f07f",
+      "date": "2026-07-26T16:36:09+08:00",
+      "author": "花火",
+      "message": "Merge remote-tracking branch 'origin/develop' into feature/code-indexer",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/988f07f1a18763bd3c99bb4adc241817896c7129"
+    },
+    {
+      "sha": "8dae4cb",
+      "date": "2026-07-26T16:17:57+08:00",
+      "author": "花火",
+      "message": "feat: add repository indexer mvp",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/8dae4cb6691636d0b24402268b0623ec3f85d570"
+    },
+    {
+      "sha": "ddb9b84",
+      "date": "2026-07-25T12:43:38+08:00",
+      "author": "Zijie-cai57",
+      "message": "chore: finalize harness runtime release",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/ddb9b8457927b582268b4ea89ec719dd73363a35"
+    },
+    {
+      "sha": "539646f",
+      "date": "2026-07-25T12:36:46+08:00",
+      "author": "Zijie-cai57",
+      "message": "docs: consolidate harness runtime handoff",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/539646f123fcf243a3512b53becd6ef9105dfd0f"
+    },
+    {
+      "sha": "1f39455",
+      "date": "2026-07-25T00:22:52+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: integrate frontend workbench runtime",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/1f394557c46a900cae838c10955f9fbaa2d1c101"
+    },
+    {
+      "sha": "ee9ef89",
+      "date": "2026-07-25T00:03:08+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: add runtime quality and safety controls",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/ee9ef89c1b9772bceb54c0eaa9b2e393ecad843c"
+    },
+    {
+      "sha": "a6374ce",
+      "date": "2026-07-24T23:30:40+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: complete API and persistent SSE integration",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/a6374ce3fec7ae69cc1cae4054be56a05c69d400"
+    },
+    {
+      "sha": "0e5d66e",
+      "date": "2026-07-24T23:17:01+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: deliver reviewed workspace changes",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/0e5d66e6ce28c9abadcd4e5f94957841d2110d9a"
+    },
+    {
+      "sha": "5450b26",
+      "date": "2026-07-24T22:39:11+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: implement resumable harness loop",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/5450b26e146795a13c1c1e6e48115da11b46a477"
+    },
+    {
+      "sha": "6e22036",
+      "date": "2026-07-24T21:58:16+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: persist context and task budgets",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/6e2203691dfb3f4096b3d6c8e90755f0b3e25c40"
+    },
+    {
+      "sha": "b041da6",
+      "date": "2026-07-24T21:33:13+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: integrate model and index ports",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/b041da6d46d485f99c0646b73687e4019b0d5598"
+    },
+    {
+      "sha": "a22fa68",
+      "date": "2026-07-24T21:19:07+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: add resumable task lifecycle",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/a22fa6850402e99c9725ab92418c9231085ec909"
+    },
+    {
+      "sha": "3b2bb81",
+      "date": "2026-07-24T20:57:09+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: implement controlled tool runtime",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/3b2bb81e6d6d7989fa3fc67f72a146d286f9892b"
+    },
+    {
+      "sha": "c61012f",
+      "date": "2026-07-24T20:27:22+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: isolate task workspaces",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/c61012f03555dd3f7aae8b5f375be420cf5b91bf"
+    },
+    {
+      "sha": "4d851ba",
+      "date": "2026-07-24T20:01:57+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: add transactional task persistence",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/4d851bafbc35f083c8f6f711256db8a01c192a3d"
+    },
+    {
+      "sha": "3256ef3",
+      "date": "2026-07-24T19:41:56+08:00",
+      "author": "Zijie-cai57",
+      "message": "feat: establish versioned harness contracts",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/3256ef3e126f071499ce9022df5135c5b592d826"
+    },
+    {
+      "sha": "ec1c1a3",
+      "date": "2026-07-24T19:40:06+08:00",
+      "author": "louyu",
+      "message": "feat: align frontend workbench with harness contracts",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/ec1c1a3bf807a0e4978eaf7b2eec0906f40e5b5d"
+    },
+    {
+      "sha": "1d93dec",
+      "date": "2026-07-24T19:07:59+08:00",
+      "author": "Zijie-cai57",
+      "message": "chore: establish cross-platform quality baseline",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/1d93dec38f91c17727bfc2921b60765509586a4c"
+    },
+    {
+      "sha": "2f1cb12",
+      "date": "2026-07-24T17:07:31+08:00",
+      "author": "球藻OP",
+      "message": "docs: complete API and SSE contracts",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/2f1cb1209a2e696861f8236acef8f6594d8676c2"
+    },
+    {
+      "sha": "3cdaac8",
+      "date": "2026-07-24T16:55:31+08:00",
+      "author": "球藻OP",
+      "message": "feat: scaffold harness backend runtime",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/3cdaac85b4125fc00ac4069434f3019e71277bd4"
+    },
+    {
+      "sha": "c021da3",
+      "date": "2026-07-24T14:47:11+08:00",
+      "author": "louyu",
+      "message": "feat: implement frontend workbench",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/c021da3a8a7fed2cbfd4be8b0a0893d91207bf6a"
+    },
+    {
+      "sha": "c083afc",
+      "date": "2026-07-23T18:15:25+08:00",
+      "author": "球藻OP",
+      "message": "Merge remote-tracking branch 'origin/main'",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/c083afc707e2d18b1857b3420e65933890989a48"
+    },
+    {
+      "sha": "5027bc9",
+      "date": "2026-07-23T18:11:40+08:00",
+      "author": "球藻OP",
+      "message": "chore: initialize project collaboration baseline",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/5027bc93a9ddcb2ab98a14a79ca87347c3dfd4b4"
+    },
+    {
+      "sha": "b685d45",
+      "date": "2026-07-23T16:27:35+08:00",
+      "author": "QiuZaoP",
+      "message": "Initial commit",
+      "url": "https://gitee.com/QiuZaoOP/CodeHarness/commit/b685d45c1c27f36dc240a3f13fea4def5de0ef4c"
+    }
+  ]
+}

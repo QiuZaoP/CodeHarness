@@ -1,0 +1,9 @@
+# 模块负责人在仓库正式成员名单确定后替换为 GitHub 用户名。
+# 示例：
+# /frontend/ @frontend-owner
+# /harness/ @harness-owner
+# /parser/ @parser-owner
+# /gateway/ @model-owner
+# /tests/ @qa-owner
+
+* @QiuZaoP

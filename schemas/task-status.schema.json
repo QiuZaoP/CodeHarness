@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeharness.local/schemas/task-status.schema.json",
+  "type": "string",
+  "enum": [
+    "CREATED",
+    "PRECHECKING",
+    "PLANNING",
+    "EXECUTING",
+    "VERIFYING",
+    "READY_FOR_REVIEW",
+    "APPLIED",
+    "WAITING_USER",
+    "PAUSED",
+    "CANCELLED",
+    "FAILED"
+  ]
+}
